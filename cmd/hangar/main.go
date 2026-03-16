@@ -319,7 +319,8 @@ func (m model) View() string {
 		} else {
 			base = m.viewMain()
 		}
-		return clampToViewport(m.width, m.height, overlayTransparentTo(m.width, m.height, base, m.renderHelpOverlay()))
+		box := m.renderHelpBox()
+		return clampToViewport(m.width, m.height, overlayBoxCentered(m.width, m.height, base, box))
 	}
 
 	if m.width < 60 || m.height < 10 {
@@ -482,13 +483,16 @@ func (m model) renderListPane(p listPane, width, height int, focused bool) strin
 	return title + "\n" + box
 }
 
-func (m model) renderHelpOverlay() string {
+func (m model) renderHelpBox() string {
 	maxBoxW := min(74, m.width-6)
 	if maxBoxW < 30 {
 		maxBoxW = min(30, m.width)
 	}
 
-	header := lipgloss.NewStyle().Bold(true).Render("Hotkeys")
+	appBg := lipgloss.Color("#30363d")
+	fg := lipgloss.Color("#c9d1d9")
+
+	header := lipgloss.NewStyle().Bold(true).Foreground(fg).Render("Hotkeys")
 
 	groups := []struct {
 		name string
@@ -522,7 +526,7 @@ func (m model) renderHelpOverlay() string {
 	bodyLines := make([]string, 0, 32)
 	bodyLines = append(bodyLines, header, "")
 
-	keyStyle := lipgloss.NewStyle().Bold(true)
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(fg)
 	groupTitleStyle := lipgloss.NewStyle().Foreground(colorTitleFocused).Bold(true)
 
 	for gi, g := range groups {
@@ -552,60 +556,48 @@ func (m model) renderHelpOverlay() string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(colorBorderFocused).
-		Background(lipgloss.Color("#0d1117")).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		Background(appBg).
+		Foreground(fg).
 		Padding(1, 2).
 		Width(maxBoxW).
 		Render(body)
 
-	// Place on top of the existing UI. The transparent compositing happens in overlayTransparent.
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	for strings.HasSuffix(box, "\n") {
+		box = strings.TrimSuffix(box, "\n")
+	}
+	return box
 }
 
-func overlayTransparentTo(w, h int, base, over string) string {
+func overlayBoxCentered(w, h int, base, box string) string {
 	if w <= 0 || h <= 0 {
 		return ""
 	}
-
 	base = lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, base)
-	over = lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, over)
-
-	bLines := strings.Split(base, "\n")
-	oLines := strings.Split(over, "\n")
-	outLines := make([]string, 0, h)
-
-	for y := 0; y < h; y++ {
-		b := ""
-		if y < len(bLines) {
-			b = bLines[y]
-		}
-		o := ""
-		if y < len(oLines) {
-			o = oLines[y]
-		}
-
-		line := strings.Builder{}
-		for x := 0; x < w; x++ {
-			oCell := ansi.Cut(o, x, x+1)
-			if ansi.StringWidth(oCell) == 0 {
-				oCell = " "
-			}
-			plain := ansi.Strip(oCell)
-			styled := strings.Contains(oCell, "\x1b")
-			if strings.TrimSpace(plain) == "" && !styled {
-				bCell := ansi.Cut(b, x, x+1)
-				if ansi.StringWidth(bCell) == 0 {
-					bCell = " "
-				}
-				line.WriteString(bCell)
-			} else {
-				line.WriteString(oCell)
-			}
-		}
-		outLines = append(outLines, line.String())
+	box = strings.TrimSuffix(box, "\n")
+	bw, bh := lipgloss.Width(box), lipgloss.Height(box)
+	if bw <= 0 || bh <= 0 {
+		return base
 	}
 
-	return strings.Join(outLines, "\n")
+	x := (w - bw) / 2
+	y := (h - bh) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	bLines := strings.Split(base, "\n")
+	boxLines := strings.Split(box, "\n")
+	for i := 0; i < bh && (y+i) < len(bLines); i++ {
+		ins := lipgloss.Place(bw, 1, lipgloss.Left, lipgloss.Top, boxLines[i])
+		left := ansi.Cut(bLines[y+i], 0, x)
+		right := ansi.Cut(bLines[y+i], x+bw, w)
+		bLines[y+i] = left + ins + right
+	}
+
+	return strings.Join(bLines, "\n")
 }
 
 func min(a, b int) int {
