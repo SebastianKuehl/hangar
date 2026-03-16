@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type paneID int
@@ -249,13 +250,56 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
+func clampToViewport(w, h int, s string) string {
+	out := lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, s)
+	for lipgloss.Height(out) > h {
+		next := strings.TrimSuffix(out, "\n")
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return out
+}
+
+func renderRow(st lipgloss.Style, w int, s string) string {
+	if w <= 0 {
+		return ""
+	}
+	s = ansi.Truncate(s, w, "…")
+	return st.Width(w).Render(s)
+}
+
 var (
+	colorBorder        = lipgloss.Color("#3b3b3b")
+	colorBorderFocused = lipgloss.Color("#3fb950")
+	colorTitle         = lipgloss.Color("#c9d1d9")
+	colorTitleFocused  = lipgloss.Color("#7ee787")
+	colorSelBgFocused  = lipgloss.Color("#238636")
+	colorSelBgFaint    = lipgloss.Color("#30363d")
+	colorSelFg         = lipgloss.Color("#ffffff")
+
 	basePaneStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorBorder).
 			Padding(0, 1)
 
 	focusedPaneStyle = basePaneStyle.Copy().
-				BorderForeground(lipgloss.Color("62")).
+				BorderForeground(colorBorderFocused)
+
+	titleStyle = lipgloss.NewStyle().
+			Foreground(colorTitle).
+			Bold(true)
+
+	titleFocusedStyle = titleStyle.Copy().
+				Foreground(colorTitleFocused)
+
+	selectedStyle = lipgloss.NewStyle().
+			Foreground(colorSelFg).
+			Background(colorSelBgFaint)
+
+	selectedFocusedStyle = selectedStyle.Copy().
+				Background(colorSelBgFocused).
 				Bold(true)
 
 	faintStyle = lipgloss.NewStyle().Faint(true)
@@ -277,6 +321,24 @@ func (m model) View() string {
 	}
 
 	gap := 1
+	rightVisible := m.details.visible || m.logs.visible
+
+	var out string
+
+	// If the right column is completely hidden, let Services expand to use that space.
+	if !rightVisible {
+		if m.projects.visible {
+			col1 := m.width / 4
+			col2 := m.width - col1 - gap
+			left := m.renderListPane(m.projects, col1, m.height, m.focus == paneProjects)
+			mid := m.renderListPane(m.services, col2, m.height, m.focus == paneServices)
+			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
+		} else {
+			out = m.renderListPane(m.services, m.width, m.height, m.focus == paneServices)
+		}
+		return clampToViewport(m.width, m.height, out)
+	}
+
 	if m.projects.visible {
 		col1 := m.width / 4
 		col2 := m.width / 4
@@ -289,14 +351,16 @@ func (m model) View() string {
 		mid := m.renderListPane(m.services, col2, m.height, m.focus == paneServices)
 		right := m.renderRightColumn(col3, m.height)
 
-		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
+		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
+		return clampToViewport(m.width, m.height, out)
 	}
 
 	col2 := m.width / 3
 	col3 := m.width - col2 - gap
 	mid := m.renderListPane(m.services, col2, m.height, m.focus == paneServices)
 	right := m.renderRightColumn(col3, m.height)
-	return lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
+	out = lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
+	return clampToViewport(m.width, m.height, out)
 }
 
 func (m model) renderRightColumn(width, height int) string {
@@ -335,39 +399,81 @@ func (m model) renderRightColumn(width, height int) string {
 }
 
 func (m model) renderListPane(p listPane, width, height int, focused bool) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+
+	// Render the title above the bordered box so it doesn't get clipped by viewport math.
+	ts := titleStyle
+	if focused {
+		ts = titleFocusedStyle
+	}
+	title := ts.Width(width).Padding(0, 1).Render(p.title)
+	if height == 1 {
+		return title
+	}
+
+	boxH := height - 1
 	style := basePaneStyle
 	if focused {
 		style = focusedPaneStyle
 	}
-	innerW := max(0, width-4)  // account for left/right border (2) + horizontal padding (2)
-	innerH := max(0, height-2) // account for top/bottom border
-	style = style.Width(innerW).Height(innerH)
+
+	innerW := max(0, width-4) // border (2) + horizontal padding (2)
+	innerH := max(0, boxH-2)  // border (2)
 
 	lines := make([]string, 0, 2+len(p.items))
-	lines = append(lines, faintStyle.Render(p.placeholder))
-	lines = append(lines, "")
+	lines = append(lines, renderRow(faintStyle, innerW, p.placeholder))
+	lines = append(lines, renderRow(lipgloss.NewStyle(), innerW, ""))
 
+	plainLine := lipgloss.NewStyle()
 	for i, it := range p.items {
 		prefix := "  "
 		if i == p.selected {
+			prefix = "• "
 			if focused {
 				prefix = "> "
-			} else {
-				prefix = "• "
 			}
 		}
-		lines = append(lines, prefix+it)
+
+		line := prefix + it
+		if i == p.selected {
+			if focused {
+				lines = append(lines, renderRow(selectedFocusedStyle, innerW, line))
+			} else {
+				lines = append(lines, renderRow(selectedStyle, innerW, line))
+			}
+			continue
+		}
+		lines = append(lines, renderRow(plainLine, innerW, line))
+	}
+
+	// lipgloss.Style.Height() sets a minimum, not a maximum. Clamp and pad the
+	// number of rendered lines so panes always fit their allocated viewport.
+	if innerH == 0 {
+		lines = nil
+	} else if len(lines) > innerH {
+		lines = lines[:innerH]
+		lines[innerH-1] = faintStyle.Width(innerW).Render("…")
+	} else {
+		for len(lines) < innerH {
+			lines = append(lines, renderRow(plainLine, innerW, ""))
+		}
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	// Note: Pane content is intentionally placeholder data for now.
-	title := lipgloss.NewStyle().Bold(true).Render(p.title)
-	return style.Render(title + "\n" + content)
+	box := style.Render(content)
+	for strings.HasSuffix(box, "\n") {
+		box = strings.TrimSuffix(box, "\n")
+	}
+	return title + "\n" + box
 }
 
 func (m model) renderHelp() string {
 	help := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
+		BorderForeground(colorBorderFocused).
 		Padding(1, 2).
 		Width(min(70, m.width-4)).
 		Render(
