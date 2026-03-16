@@ -552,6 +552,8 @@ func (m model) renderHelpOverlay() string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(colorBorderFocused).
+		Background(lipgloss.Color("#0d1117")).
+		Foreground(lipgloss.Color("#c9d1d9")).
 		Padding(1, 2).
 		Width(maxBoxW).
 		Render(body)
@@ -588,7 +590,9 @@ func overlayTransparentTo(w, h int, base, over string) string {
 			if ansi.StringWidth(oCell) == 0 {
 				oCell = " "
 			}
-			if strings.TrimSpace(ansi.Strip(oCell)) == "" {
+			plain := ansi.Strip(oCell)
+			styled := strings.Contains(oCell, "\x1b")
+			if strings.TrimSpace(plain) == "" && !styled {
 				bCell := ansi.Cut(b, x, x+1)
 				if ansi.StringWidth(bCell) == 0 {
 					bCell = " "
