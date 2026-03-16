@@ -311,7 +311,15 @@ func (m model) View() string {
 	}
 
 	if m.showHelp {
-		return m.renderHelp()
+		base := ""
+		if m.width < 60 || m.height < 10 {
+			base = lipgloss.NewStyle().Padding(1, 2).Render(
+				"Terminal too small. Resize to at least 60x10.\n\n" +
+					"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, ? help, q quit.")
+		} else {
+			base = m.viewMain()
+		}
+		return clampToViewport(m.width, m.height, overlayTransparentTo(m.width, m.height, base, m.renderHelpOverlay()))
 	}
 
 	if m.width < 60 || m.height < 10 {
@@ -320,6 +328,10 @@ func (m model) View() string {
 				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, ? help, q quit.")
 	}
 
+	return m.viewMain()
+}
+
+func (m model) viewMain() string {
 	gap := 1
 	rightVisible := m.details.visible || m.logs.visible
 
@@ -470,27 +482,126 @@ func (m model) renderListPane(p listPane, width, height int, focused bool) strin
 	return title + "\n" + box
 }
 
-func (m model) renderHelp() string {
-	help := lipgloss.NewStyle().
+func (m model) renderHelpOverlay() string {
+	maxBoxW := min(74, m.width-6)
+	if maxBoxW < 30 {
+		maxBoxW = min(30, m.width)
+	}
+
+	header := lipgloss.NewStyle().Bold(true).Render("Hotkeys")
+
+	groups := []struct {
+		name string
+		rows [][2]string
+	}{
+		{
+			name: "Panes",
+			rows: [][2]string{
+				{"p", "Toggle Projects"},
+				{"d", "Toggle Details"},
+				{"a", "Toggle Logs"},
+			},
+		},
+		{
+			name: "Navigation",
+			rows: [][2]string{
+				{"h/l (←/→)", "Move focus between panes"},
+				{"j/k (↓/↑)", "Move selection within focused pane"},
+			},
+		},
+		{
+			name: "Help / Quit",
+			rows: [][2]string{
+				{"?", "Show/close this help"},
+				{"esc", "Close help"},
+				{"q", "Quit"},
+			},
+		},
+	}
+
+	bodyLines := make([]string, 0, 32)
+	bodyLines = append(bodyLines, header, "")
+
+	keyStyle := lipgloss.NewStyle().Bold(true)
+	groupTitleStyle := lipgloss.NewStyle().Foreground(colorTitleFocused).Bold(true)
+
+	for gi, g := range groups {
+		if gi > 0 {
+			bodyLines = append(bodyLines, "")
+		}
+		bodyLines = append(bodyLines, groupTitleStyle.Render(g.name))
+
+		keyW := 0
+		for _, r := range g.rows {
+			keyW = max(keyW, ansi.StringWidth(r[0]))
+		}
+
+		for _, r := range g.rows {
+			left := keyStyle.Render(r[0])
+			pad := keyW - ansi.StringWidth(r[0])
+			if pad < 0 {
+				pad = 0
+			}
+			line := left + strings.Repeat(" ", pad) + "  " + r[1]
+			bodyLines = append(bodyLines, line)
+		}
+	}
+
+	body := strings.Join(bodyLines, "\n")
+
+	box := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(colorBorderFocused).
 		Padding(1, 2).
-		Width(min(70, m.width-4)).
-		Render(
-			"Hotkeys\n\n" +
-				"p  Toggle Projects pane\n" +
-				"d  Toggle Details pane\n" +
-				"a  Toggle Logs pane\n\n" +
-				"h/l (or ←/→)  Move focus between panes\n" +
-				"j/k (or ↓/↑)  Move selection within focused pane\n\n" +
-				"?  Show/close this help\n" +
-				"esc  Close help\n" +
-				"q  Quit\n\n" +
-				"Notes\n" +
-				"- Pane contents are intentionally placeholder data for now.\n" +
-				"- When a focused pane is toggled off, focus jumps to the nearest visible pane.")
+		Width(maxBoxW).
+		Render(body)
 
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, help)
+	// Place on top of the existing UI. The transparent compositing happens in overlayTransparent.
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func overlayTransparentTo(w, h int, base, over string) string {
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+
+	base = lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, base)
+	over = lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, over)
+
+	bLines := strings.Split(base, "\n")
+	oLines := strings.Split(over, "\n")
+	outLines := make([]string, 0, h)
+
+	for y := 0; y < h; y++ {
+		b := ""
+		if y < len(bLines) {
+			b = bLines[y]
+		}
+		o := ""
+		if y < len(oLines) {
+			o = oLines[y]
+		}
+
+		line := strings.Builder{}
+		for x := 0; x < w; x++ {
+			oCell := ansi.Cut(o, x, x+1)
+			if ansi.StringWidth(oCell) == 0 {
+				oCell = " "
+			}
+			if strings.TrimSpace(ansi.Strip(oCell)) == "" {
+				bCell := ansi.Cut(b, x, x+1)
+				if ansi.StringWidth(bCell) == 0 {
+					bCell = " "
+				}
+				line.WriteString(bCell)
+			} else {
+				line.WriteString(oCell)
+			}
+		}
+		outLines = append(outLines, line.String())
+	}
+
+	return strings.Join(outLines, "\n")
 }
 
 func min(a, b int) int {
