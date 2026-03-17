@@ -53,7 +53,7 @@ func TestViewFitsViewport(t *testing.T) {
 				lboxH, mboxH := 0, 0
 				if v.projects {
 					col1 := tc.w / 4
-					l := m.renderListPane(m.projects, col1, tc.h, true)
+					l := m.renderListPane(m.projects, col1, tc.h, true, false)
 					lh = lipgloss.Height(l)
 					if parts := strings.SplitN(l, "\n", 2); len(parts) == 2 {
 						lboxH = lipgloss.Height(parts[1])
@@ -65,7 +65,7 @@ func TestViewFitsViewport(t *testing.T) {
 						col1 := tc.w / 4
 						col2 := tc.w / 4
 						col3 := tc.w - col1 - col2 - 2*gap
-						m2 := m.renderListPane(m.services, col2, tc.h, true)
+						m2 := m.renderListPane(m.services, col2, tc.h, true, false)
 						mh = lipgloss.Height(m2)
 						if parts := strings.SplitN(m2, "\n", 2); len(parts) == 2 {
 							mboxH = lipgloss.Height(parts[1])
@@ -74,7 +74,7 @@ func TestViewFitsViewport(t *testing.T) {
 					} else {
 						col2 := tc.w / 3
 						col3 := tc.w - col2 - gap
-						m2 := m.renderListPane(m.services, col2, tc.h, true)
+						m2 := m.renderListPane(m.services, col2, tc.h, true, false)
 						mh = lipgloss.Height(m2)
 						if parts := strings.SplitN(m2, "\n", 2); len(parts) == 2 {
 							mboxH = lipgloss.Height(parts[1])
@@ -87,10 +87,10 @@ func TestViewFitsViewport(t *testing.T) {
 				if v.projects {
 					col1 := tc.w / 4
 					col2 := tc.w - col1 - gap
-					lh = lipgloss.Height(m.renderListPane(m.projects, col1, tc.h, true))
-					mh = lipgloss.Height(m.renderListPane(m.services, col2, tc.h, true))
+					lh = lipgloss.Height(m.renderListPane(m.projects, col1, tc.h, true, false))
+					mh = lipgloss.Height(m.renderListPane(m.services, col2, tc.h, true, false))
 				} else {
-					mh = lipgloss.Height(m.renderListPane(m.services, tc.w, tc.h, true))
+					mh = lipgloss.Height(m.renderListPane(m.services, tc.w, tc.h, true, false))
 				}
 				t.Fatalf("view height overflow: got %d > %d (projects=%v details=%v logs=%v leftH=%d midH=%d)", gotH, tc.h, v.projects, v.details, v.logs, lh, mh)
 			}

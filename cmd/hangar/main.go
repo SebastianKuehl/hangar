@@ -75,13 +75,13 @@ func newModel() model {
 		projects: listPane{
 			title:       "Projects",
 			visible:     true,
-			placeholder: "Press 'c' to create a project.",
+			placeholder: "",
 			items:       projectItems(cfg),
 		},
 		services: listPane{
 			title:       "Services",
 			visible:     true,
-			placeholder: "Press 'c' to create a service.",
+			placeholder: "",
 			items:       serviceItems(cfg, 0),
 		},
 		details: listPane{
@@ -187,7 +187,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.cfg.Projects) == 0 {
 					m.errMsg = "Create a project first before adding services."
 				} else {
-					m.modal.openCreateService()
+					projectName := m.cfg.Projects[m.projects.selected].Name
+					m.modal.openCreateService(projectName)
 				}
 			}
 			return m, nil
@@ -432,11 +433,11 @@ func (m model) viewMain() string {
 		if m.projects.visible {
 			col1 := m.width / 4
 			col2 := m.width - col1 - gap
-			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects)
-			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices)
+			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, m.focus == paneServices)
+			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, false)
 			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
 		} else {
-			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices)
+			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, false)
 		}
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -449,8 +450,8 @@ func (m model) viewMain() string {
 			col3 = 20
 		}
 
-		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects)
-		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices)
+		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, m.focus == paneServices)
+		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, false)
 		right := m.renderRightColumn(col3, contentH)
 
 		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
@@ -459,7 +460,7 @@ func (m model) viewMain() string {
 
 	col2 := m.width / 3
 	col3 := m.width - col2 - gap
-	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices)
+	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, false)
 	right := m.renderRightColumn(col3, contentH)
 	out = lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
 	return clampToViewport(m.width, m.height, out+statusBar)
@@ -482,25 +483,25 @@ func (m model) renderRightColumn(width, height int) string {
 		avail := height - sep
 		if avail < 2 {
 			// Too small to split: just render one pane.
-			return m.renderListPane(m.details, width, height, m.focus == paneDetails)
+			return m.renderListPane(m.details, width, height, m.focus == paneDetails, false)
 		}
 		topH := avail / 2
 		botH := avail - topH
-		top := m.renderListPane(m.details, width, topH, m.focus == paneDetails)
-		bot := m.renderListPane(m.logs, width, botH, m.focus == paneLogs)
+		top := m.renderListPane(m.details, width, topH, m.focus == paneDetails, false)
+		bot := m.renderListPane(m.logs, width, botH, m.focus == paneLogs, false)
 		return lipgloss.JoinVertical(lipgloss.Left, top, bot)
 	case 1:
 		if m.details.visible {
-			return m.renderListPane(m.details, width, height, m.focus == paneDetails)
+			return m.renderListPane(m.details, width, height, m.focus == paneDetails, false)
 		}
-		return m.renderListPane(m.logs, width, height, m.focus == paneLogs)
+		return m.renderListPane(m.logs, width, height, m.focus == paneLogs, false)
 	default:
 		empty := listPane{title: "Right Column", visible: true, placeholder: "PLACEHOLDER: Enable Details (d) or Logs (a).", items: []string{"(nothing to show)"}}
-		return m.renderListPane(empty, width, height, false)
+		return m.renderListPane(empty, width, height, false, false)
 	}
 }
 
-func (m model) renderListPane(p listPane, width, height int, focused bool) string {
+func (m model) renderListPane(p listPane, width, height int, focused bool, highlightSel bool) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
@@ -525,24 +526,29 @@ func (m model) renderListPane(p listPane, width, height int, focused bool) strin
 	innerH := max(0, boxH-2)  // border (2)
 
 	lines := make([]string, 0, 2+len(p.items))
-	lines = append(lines, renderRow(faintStyle, innerW, p.placeholder))
-	lines = append(lines, renderRow(lipgloss.NewStyle(), innerW, ""))
+	if p.placeholder != "" {
+		lines = append(lines, renderRow(faintStyle, innerW, p.placeholder))
+		lines = append(lines, renderRow(lipgloss.NewStyle(), innerW, ""))
+	}
 
 	plainLine := lipgloss.NewStyle()
 	for i, it := range p.items {
 		prefix := "  "
 		if i == p.selected {
 			prefix = "• "
-			if focused {
+			if focused || highlightSel {
 				prefix = "> "
 			}
 		}
 
 		line := prefix + it
 		if i == p.selected {
-			if focused {
+			switch {
+			case focused:
 				lines = append(lines, renderRow(selectedFocusedStyle, innerW, line))
-			} else {
+			case highlightSel:
+				lines = append(lines, renderRow(selectedFocusedStyle, innerW, line))
+			default:
 				lines = append(lines, renderRow(selectedStyle, innerW, line))
 			}
 			continue
@@ -598,8 +604,7 @@ func (m model) renderHelpBox() string {
 		{
 			name: "Create",
 			rows: [][2]string{
-				{"c", "Create project (in Projects pane)"},
-				{"c", "Create service (in Services pane)"},
+				{"c", "Create project or service (context-sensitive)"},
 			},
 		},
 		{

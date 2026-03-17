@@ -31,6 +31,7 @@ type formModal struct {
 	fields      []formField
 	activeField int
 	errMsg      string
+	projectName string // set when mode == modalCreateService
 }
 
 // isOpen reports whether any modal is currently visible.
@@ -49,10 +50,11 @@ func (f *formModal) openCreateProject() {
 	}
 }
 
-// openCreateService resets the modal for service creation.
-func (f *formModal) openCreateService() {
+// openCreateService resets the modal for service creation within a named project.
+func (f *formModal) openCreateService(projectName string) {
 	*f = formModal{
-		mode: modalCreateService,
+		mode:        modalCreateService,
+		projectName: projectName,
 		fields: []formField{
 			{label: "Service name", required: true},
 			{label: "Path (optional)"},
@@ -170,6 +172,15 @@ func (m model) renderModal(screenW, screenH int) string {
 	lines := []string{
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7ee787")).Render(title),
 		"",
+	}
+
+	if f.mode == modalCreateService && f.projectName != "" {
+		projectLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+		projectValueStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#c9d1d9"))
+		lines = append(lines,
+			projectLabelStyle.Render("Project: ")+projectValueStyle.Render(f.projectName),
+			"",
+		)
 	}
 
 	for i, fld := range f.fields {
