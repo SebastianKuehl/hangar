@@ -10,6 +10,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// version is the current release. Override at build time with:
+//
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/hangar
+var version = "0.0.1"
+
 type paneID int
 
 const (
@@ -650,8 +655,12 @@ OPTIONS
 
 func main() {
 	for _, arg := range os.Args[1:] {
-		if arg == "--help" || arg == "-help" || arg == "-h" {
+		switch arg {
+		case "--help", "-help", "-h":
 			fmt.Print(helpText)
+			return
+		case "--version", "-v":
+			fmt.Println("v" + version)
 			return
 		}
 	}
