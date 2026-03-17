@@ -13,7 +13,7 @@ import (
 // version is the current release. Override at build time with:
 //
 //	go build -ldflags "-X main.version=1.2.3" ./cmd/hangar
-var version = "dev"
+var version = "0.0.1"
 
 type paneID int
 
@@ -621,7 +621,7 @@ func max(a, b int) int {
 
 func main() {
 	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Println("hangar version " + version)
+		fmt.Println("v" + version)
 		return
 	}
 
