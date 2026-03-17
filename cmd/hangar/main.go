@@ -436,6 +436,10 @@ func (m model) viewMain() string {
 
 	rightVisible := m.details.visible || m.logs.visible
 
+	// Context highlights: a pane stays purple when focus moves to a pane to its right.
+	projectHighlight := m.focus == paneServices || m.focus == paneDetails || m.focus == paneLogs
+	serviceHighlight := m.focus == paneDetails || m.focus == paneLogs
+
 	var out string
 
 	// If the right column is completely hidden, let Services expand to use that space.
@@ -443,11 +447,11 @@ func (m model) viewMain() string {
 		if m.projects.visible {
 			col1 := m.width / 4
 			col2 := m.width - col1 - gap
-			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, m.focus == paneServices)
-			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, false)
+			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight)
+			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight)
 			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
 		} else {
-			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, false)
+			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, serviceHighlight)
 		}
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -460,8 +464,8 @@ func (m model) viewMain() string {
 			col3 = 20
 		}
 
-		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, m.focus == paneServices)
-		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, false)
+		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight)
+		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight)
 		right := m.renderRightColumn(col3, contentH)
 
 		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
@@ -470,7 +474,7 @@ func (m model) viewMain() string {
 
 	col2 := m.width / 3
 	col3 := m.width - col2 - gap
-	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, false)
+	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight)
 	right := m.renderRightColumn(col3, contentH)
 	out = lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
 	return clampToViewport(m.width, m.height, out+statusBar)
