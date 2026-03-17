@@ -360,6 +360,7 @@ var (
 	colorTitle         = lipgloss.Color("#c9d1d9")
 	colorTitleFocused  = lipgloss.Color("#7ee787")
 	colorSelBgFocused  = lipgloss.Color("#238636")
+	colorSelBgContext  = lipgloss.Color("#6e40c9") // project stays highlighted when services pane is focused
 	colorSelBgFaint    = lipgloss.Color("#30363d")
 	colorSelFg         = lipgloss.Color("#ffffff")
 
@@ -384,6 +385,10 @@ var (
 
 	selectedFocusedStyle = selectedStyle.Copy().
 				Background(colorSelBgFocused).
+				Bold(true)
+
+	selectedContextStyle = selectedStyle.Copy().
+				Background(colorSelBgContext).
 				Bold(true)
 
 	faintStyle = lipgloss.NewStyle().Faint(true)
@@ -552,7 +557,7 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 			case focused:
 				lines = append(lines, renderRow(selectedFocusedStyle, innerW, line))
 			case highlightSel:
-				lines = append(lines, renderRow(selectedFocusedStyle, innerW, line))
+				lines = append(lines, renderRow(selectedContextStyle, innerW, line))
 			default:
 				lines = append(lines, renderRow(selectedStyle, innerW, line))
 			}
