@@ -38,32 +38,51 @@ type model struct {
 	services listPane
 	details  listPane
 	logs     listPane
+
+	cfg    Config    // in-memory config; source of truth for UI
+	modal  formModal
+	errMsg string // transient error displayed in status bar
+}
+
+// projectItems converts a Config's projects to display strings.
+func projectItems(cfg Config) []string {
+	out := make([]string, 0, len(cfg.Projects))
+	for _, p := range cfg.Projects {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+// serviceItems returns the service names for the project at idx.
+func serviceItems(cfg Config, projectIdx int) []string {
+	if projectIdx < 0 || projectIdx >= len(cfg.Projects) {
+		return []string{}
+	}
+	svcs := cfg.Projects[projectIdx].Services
+	out := make([]string, 0, len(svcs))
+	for _, s := range svcs {
+		out = append(out, s.Name)
+	}
+	return out
 }
 
 func newModel() model {
+	cfg, _ := loadConfig() // ignore load error on startup; app still works with empty state
+
 	return model{
+		cfg:   cfg,
 		focus: paneProjects,
 		projects: listPane{
 			title:       "Projects",
 			visible:     true,
-			placeholder: "PLACEHOLDER: Replace with real project data.",
-			items: []string{
-				"Project Alpha",
-				"Project Beta",
-				"Project Gamma",
-				"Project Delta",
-			},
+			placeholder: "Press 'c' to create a project.",
+			items:       projectItems(cfg),
 		},
 		services: listPane{
 			title:       "Services",
 			visible:     true,
-			placeholder: "PLACEHOLDER: Replace with real service data.",
-			items: []string{
-				"api",
-				"web",
-				"worker",
-				"cron",
-			},
+			placeholder: "Press 'c' to create a service.",
+			items:       serviceItems(cfg, 0),
 		},
 		details: listPane{
 			title:       "Details",
@@ -101,15 +120,53 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+
+	case configSavedMsg:
+		// Update in-memory config and refresh pane lists.
+		m.cfg = msg.cfg
+		m.projects.items = projectItems(m.cfg)
+		m.services.items = serviceItems(m.cfg, m.projects.selected)
+		m.errMsg = ""
+		return m, nil
+
+	case configErrMsg:
+		m.errMsg = "Error saving config: " + msg.err.Error()
+		return m, nil
+
 	case tea.KeyMsg:
 		k := msg.String()
+
+		// ctrl+c always quits, even when a modal is open.
+		if k == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+		// Modal intercepts all remaining keys while open.
+		if m.modal.isOpen() {
+			submit, closeModal := m.modal.handleKey(k)
+			if closeModal {
+				m.modal.close()
+				return m, nil
+			}
+			if submit {
+				name := m.modal.name()
+				path := m.modal.path()
+				mode := m.modal.mode
+				m.modal.close()
+				if mode == modalCreateProject {
+					return m, saveProjectCmd(name, path)
+				}
+				return m, saveServiceCmd(m.projects.selected, name, path)
+			}
+			return m, nil
+		}
 
 		if m.showHelp {
 			switch k {
 			case "?", "esc":
 				m.showHelp = false
 				return m, nil
-			case "ctrl+c", "q":
+			case "q":
 				return m, tea.Quit
 			default:
 				return m, nil
@@ -117,10 +174,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch k {
-		case "ctrl+c", "q":
+		case "q":
 			return m, tea.Quit
 		case "?":
 			m.showHelp = true
+			return m, nil
+		case "c":
+			if m.focus == paneProjects {
+				m.modal.openCreateProject()
+			} else if m.focus == paneServices {
+				// A service must belong to a project.
+				if len(m.cfg.Projects) == 0 {
+					m.errMsg = "Create a project first before adding services."
+				} else {
+					m.modal.openCreateService()
+				}
+			}
 			return m, nil
 		case "p":
 			m.projects.visible = !m.projects.visible
@@ -142,9 +211,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "j", "down":
 			m.moveSelection(1)
+			if m.focus == paneProjects {
+				// Use in-memory config — no blocking disk read.
+				m.services.items = serviceItems(m.cfg, m.projects.selected)
+				m.services.selected = 0
+			}
 			return m, nil
 		case "k", "up":
 			m.moveSelection(-1)
+			if m.focus == paneProjects {
+				m.services.items = serviceItems(m.cfg, m.projects.selected)
+				m.services.selected = 0
+			}
 			return m, nil
 		}
 	}
@@ -310,30 +388,41 @@ func (m model) View() string {
 		return ""
 	}
 
-	if m.showHelp {
-		base := ""
-		if m.width < 60 || m.height < 10 {
-			base = lipgloss.NewStyle().Padding(1, 2).Render(
-				"Terminal too small. Resize to at least 60x10.\n\n" +
-					"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, ? help, q quit.")
-		} else {
-			base = m.viewMain()
-		}
-		box := m.renderHelpBox()
-		return clampToViewport(m.width, m.height, overlayBoxCentered(m.width, m.height, base, box))
-	}
-
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, c create, ? help, q quit.")
 	}
 
-	return m.viewMain()
+	var base string
+	if m.showHelp {
+		base = m.viewMain()
+		box := m.renderHelpBox()
+		base = overlayBoxCentered(m.width, m.height, base, box)
+	} else {
+		base = m.viewMain()
+	}
+
+	if m.modal.isOpen() {
+		box := m.renderModal(m.width, m.height)
+		base = overlayBoxCentered(m.width, m.height, base, box)
+	}
+
+	return clampToViewport(m.width, m.height, base)
 }
 
 func (m model) viewMain() string {
 	gap := 1
+
+	// Reserve 1 row for the status/error bar at the bottom when there's a message.
+	contentH := m.height
+	statusBar := ""
+	if m.errMsg != "" {
+		contentH = max(0, m.height-1)
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true).Width(m.width)
+		statusBar = "\n" + errStyle.Render("⚠ " + m.errMsg)
+	}
+
 	rightVisible := m.details.visible || m.logs.visible
 
 	var out string
@@ -343,13 +432,13 @@ func (m model) viewMain() string {
 		if m.projects.visible {
 			col1 := m.width / 4
 			col2 := m.width - col1 - gap
-			left := m.renderListPane(m.projects, col1, m.height, m.focus == paneProjects)
-			mid := m.renderListPane(m.services, col2, m.height, m.focus == paneServices)
+			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects)
+			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices)
 			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
 		} else {
-			out = m.renderListPane(m.services, m.width, m.height, m.focus == paneServices)
+			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices)
 		}
-		return clampToViewport(m.width, m.height, out)
+		return clampToViewport(m.width, m.height, out+statusBar)
 	}
 
 	if m.projects.visible {
@@ -360,20 +449,20 @@ func (m model) viewMain() string {
 			col3 = 20
 		}
 
-		left := m.renderListPane(m.projects, col1, m.height, m.focus == paneProjects)
-		mid := m.renderListPane(m.services, col2, m.height, m.focus == paneServices)
-		right := m.renderRightColumn(col3, m.height)
+		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects)
+		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices)
+		right := m.renderRightColumn(col3, contentH)
 
 		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
-		return clampToViewport(m.width, m.height, out)
+		return clampToViewport(m.width, m.height, out+statusBar)
 	}
 
 	col2 := m.width / 3
 	col3 := m.width - col2 - gap
-	mid := m.renderListPane(m.services, col2, m.height, m.focus == paneServices)
-	right := m.renderRightColumn(col3, m.height)
+	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices)
+	right := m.renderRightColumn(col3, contentH)
 	out = lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
-	return clampToViewport(m.width, m.height, out)
+	return clampToViewport(m.width, m.height, out+statusBar)
 }
 
 func (m model) renderRightColumn(width, height int) string {
@@ -504,6 +593,13 @@ func (m model) renderHelpBox() string {
 				{"p", "Toggle Projects"},
 				{"d", "Toggle Details"},
 				{"a", "Toggle Logs"},
+			},
+		},
+		{
+			name: "Create",
+			rows: [][2]string{
+				{"c", "Create project (in Projects pane)"},
+				{"c", "Create service (in Services pane)"},
 			},
 		},
 		{
