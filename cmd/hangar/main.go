@@ -614,7 +614,48 @@ func max(a, b int) int {
 	return b
 }
 
+const helpText = `hangar – terminal dashboard TUI
+
+USAGE
+  hangar [--help]
+
+DESCRIPTION
+  hangar launches an interactive terminal UI with four navigation panes:
+
+    Projects   Left column  – list of projects to browse
+    Services   Center       – services belonging to the selected project
+    Details    Top-right    – metadata for the selected item
+    Logs       Bottom-right – live log stream for the selected service
+
+NAVIGATION
+  h / ←    Move focus to the left pane
+  l / →    Move focus to the right pane
+  j / ↓    Move selection down within the focused pane
+  k / ↑    Move selection up within the focused pane
+
+TOGGLES
+  p        Show / hide the Projects pane
+  d        Show / hide the Details pane
+  a        Show / hide the Logs pane
+  ?        Show / hide the in-app hotkey help overlay
+
+GENERAL
+  q        Quit
+  Ctrl+C   Quit
+  Esc      Close the help overlay
+
+OPTIONS
+  --help   Print this help message and exit
+`
+
 func main() {
+	for _, arg := range os.Args[1:] {
+		if arg == "--help" || arg == "-help" || arg == "-h" {
+			fmt.Print(helpText)
+			return
+		}
+	}
+
 	p := tea.NewProgram(newModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
