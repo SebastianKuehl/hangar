@@ -36,10 +36,11 @@ else
     echo "Added $INSTALL_DIR to PATH in $RC_FILE"
 fi
 
-# Source the rc file so hangar is available immediately in the current shell
-# (effective when this script is run via: source install.sh)
-# shellcheck disable=SC1090
-source "$RC_FILE"
+# Export PATH for the remainder of this script and any sourcing shell.
+# Sourcing the RC file directly is not safe here because the script runs in
+# bash while the RC file may contain shell-specific syntax (e.g. zsh prompt
+# expansions). A plain export achieves the same effect without the risk.
+export PATH="$INSTALL_DIR:$PATH"
 
 echo ""
 echo "✅ Done! hangar is ready to use."
