@@ -10,6 +10,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// version is the current release. Override at build time with:
+//
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/hangar
+var version = "dev"
+
 type paneID int
 
 const (
@@ -615,6 +620,11 @@ func max(a, b int) int {
 }
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("hangar version " + version)
+		return
+	}
+
 	p := tea.NewProgram(newModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
