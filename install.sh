@@ -36,11 +36,10 @@ else
     echo "Added $INSTALL_DIR to PATH in $RC_FILE"
 fi
 
-# Source the rc file so the current terminal picks up the new PATH
-echo "Sourcing $RC_FILE..."
+# Source the rc file so hangar is available immediately in the current shell
+# (effective when this script is run via: source install.sh)
 # shellcheck disable=SC1090
-"$SHELL" -i -c "source $RC_FILE" 2>/dev/null || true
+source "$RC_FILE"
 
 echo ""
-echo "✅ Done! Open a new terminal or run the following to use hangar right away:"
-echo "   source $RC_FILE"
+echo "✅ Done! hangar is ready to use."
