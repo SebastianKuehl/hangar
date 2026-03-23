@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -53,7 +54,7 @@ func TestViewFitsViewport(t *testing.T) {
 				lboxH, mboxH := 0, 0
 				if v.projects {
 					col1 := tc.w / 4
-					l := m.renderListPane(m.projects, col1, tc.h, true, false)
+					l := m.renderListPane(m.projects, col1, tc.h, true, false, false)
 					lh = lipgloss.Height(l)
 					if parts := strings.SplitN(l, "\n", 2); len(parts) == 2 {
 						lboxH = lipgloss.Height(parts[1])
@@ -65,7 +66,7 @@ func TestViewFitsViewport(t *testing.T) {
 						col1 := tc.w / 4
 						col2 := tc.w / 4
 						col3 := tc.w - col1 - col2 - 2*gap
-						m2 := m.renderListPane(m.services, col2, tc.h, true, false)
+						m2 := m.renderListPane(m.services, col2, tc.h, true, false, false)
 						mh = lipgloss.Height(m2)
 						if parts := strings.SplitN(m2, "\n", 2); len(parts) == 2 {
 							mboxH = lipgloss.Height(parts[1])
@@ -74,7 +75,7 @@ func TestViewFitsViewport(t *testing.T) {
 					} else {
 						col2 := tc.w / 3
 						col3 := tc.w - col2 - gap
-						m2 := m.renderListPane(m.services, col2, tc.h, true, false)
+						m2 := m.renderListPane(m.services, col2, tc.h, true, false, false)
 						mh = lipgloss.Height(m2)
 						if parts := strings.SplitN(m2, "\n", 2); len(parts) == 2 {
 							mboxH = lipgloss.Height(parts[1])
@@ -87,10 +88,10 @@ func TestViewFitsViewport(t *testing.T) {
 				if v.projects {
 					col1 := tc.w / 4
 					col2 := tc.w - col1 - gap
-					lh = lipgloss.Height(m.renderListPane(m.projects, col1, tc.h, true, false))
-					mh = lipgloss.Height(m.renderListPane(m.services, col2, tc.h, true, false))
+					lh = lipgloss.Height(m.renderListPane(m.projects, col1, tc.h, true, false, false))
+					mh = lipgloss.Height(m.renderListPane(m.services, col2, tc.h, true, false, false))
 				} else {
-					mh = lipgloss.Height(m.renderListPane(m.services, tc.w, tc.h, true, false))
+					mh = lipgloss.Height(m.renderListPane(m.services, tc.w, tc.h, true, false, false))
 				}
 				t.Fatalf("view height overflow: got %d > %d (projects=%v details=%v logs=%v leftH=%d midH=%d)", gotH, tc.h, v.projects, v.details, v.logs, lh, mh)
 			}
@@ -102,5 +103,28 @@ func TestViewFitsViewport(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestWrapToggleAffectsRightPanesOnly(t *testing.T) {
+	m := newModel()
+	m.details.items = []string{"this is a very long details line that should wrap when enabled"}
+	m.logs.items = []string{"this is a very long logs line that should wrap when enabled"}
+	m.wrapText = false
+
+	unwrapped := m.renderListPane(m.details, 20, 8, false, false, false)
+	if !strings.Contains(unwrapped, "…") {
+		t.Fatalf("expected truncated right-pane text when wrap is disabled, got %q", unwrapped)
+	}
+
+	wrapped := m.renderListPane(m.details, 20, 8, false, false, true)
+	if strings.Contains(wrapped, "…") {
+		t.Fatalf("expected wrapped right-pane text without truncation marker, got %q", wrapped)
+	}
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	got := updatedModel.(model)
+	if !got.wrapText {
+		t.Fatalf("expected wrap toggle to enable on 't'")
 	}
 }

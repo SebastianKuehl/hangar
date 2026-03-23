@@ -38,6 +38,7 @@ type model struct {
 
 	focus    paneID
 	showHelp bool
+	wrapText bool
 
 	projects listPane
 	services listPane
@@ -218,6 +219,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			m.logs.visible = !m.logs.visible
 			m.ensureFocusVisible()
+			return m, nil
+		case "t":
+			m.wrapText = !m.wrapText
 			return m, nil
 		case "h", "left":
 			m.focusPrev()
@@ -490,7 +494,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, c create, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, ? help, q quit.")
 	}
 
 	var base string
@@ -535,11 +539,11 @@ func (m model) viewMain() string {
 		if m.projects.visible {
 			col1 := m.width / 4
 			col2 := m.width - col1 - gap
-			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight)
-			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight)
+			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight, false)
+			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
 		} else {
-			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, serviceHighlight)
+			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, serviceHighlight, false)
 		}
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -552,8 +556,8 @@ func (m model) viewMain() string {
 			col3 = 20
 		}
 
-		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight)
-		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight)
+		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight, false)
+		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 		right := m.renderRightColumn(col3, contentH)
 
 		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
@@ -562,7 +566,7 @@ func (m model) viewMain() string {
 
 	col2 := m.width / 3
 	col3 := m.width - col2 - gap
-	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight)
+	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 	right := m.renderRightColumn(col3, contentH)
 	out = lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
 	return clampToViewport(m.width, m.height, out+statusBar)
@@ -585,25 +589,25 @@ func (m model) renderRightColumn(width, height int) string {
 		avail := height - sep
 		if avail < 2 {
 			// Too small to split: just render one pane.
-			return m.renderListPane(m.details, width, height, m.focus == paneDetails, false)
+			return m.renderListPane(m.details, width, height, m.focus == paneDetails, false, m.wrapText)
 		}
 		topH := avail / 2
 		botH := avail - topH
-		top := m.renderListPane(m.details, width, topH, m.focus == paneDetails, false)
-		bot := m.renderListPane(m.logs, width, botH, m.focus == paneLogs, false)
+		top := m.renderListPane(m.details, width, topH, m.focus == paneDetails, false, m.wrapText)
+		bot := m.renderListPane(m.logs, width, botH, m.focus == paneLogs, false, m.wrapText)
 		return lipgloss.JoinVertical(lipgloss.Left, top, bot)
 	case 1:
 		if m.details.visible {
-			return m.renderListPane(m.details, width, height, m.focus == paneDetails, false)
+			return m.renderListPane(m.details, width, height, m.focus == paneDetails, false, m.wrapText)
 		}
-		return m.renderListPane(m.logs, width, height, m.focus == paneLogs, false)
+		return m.renderListPane(m.logs, width, height, m.focus == paneLogs, false, m.wrapText)
 	default:
 		empty := listPane{title: "Right Column", visible: true, placeholder: "PLACEHOLDER: Enable Details (d) or Logs (a).", items: []string{"(nothing to show)"}}
-		return m.renderListPane(empty, width, height, false, false)
+		return m.renderListPane(empty, width, height, false, false, false)
 	}
 }
 
-func (m model) renderListPane(p listPane, width, height int, focused bool, highlightSel bool) string {
+func (m model) renderListPane(p listPane, width, height int, focused bool, highlightSel bool, wrap bool) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
@@ -629,8 +633,8 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 
 	lines := make([]string, 0, 2+len(p.items))
 	if p.placeholder != "" {
-		lines = append(lines, renderRow(faintStyle, innerW, p.placeholder))
-		lines = append(lines, renderRow(lipgloss.NewStyle(), innerW, ""))
+		lines = append(lines, renderRows(faintStyle, innerW, p.placeholder, wrap)...)
+		lines = append(lines, renderRows(lipgloss.NewStyle(), innerW, "", false)...)
 	}
 
 	plainLine := lipgloss.NewStyle()
@@ -647,15 +651,15 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 		if i == p.selected {
 			switch {
 			case focused:
-				lines = append(lines, renderRow(selectedFocusedStyle, innerW, line))
+				lines = append(lines, renderRows(selectedFocusedStyle, innerW, line, wrap)...)
 			case highlightSel:
-				lines = append(lines, renderRow(selectedContextStyle, innerW, line))
+				lines = append(lines, renderRows(selectedContextStyle, innerW, line, wrap)...)
 			default:
-				lines = append(lines, renderRow(selectedStyle, innerW, line))
+				lines = append(lines, renderRows(selectedStyle, innerW, line, wrap)...)
 			}
 			continue
 		}
-		lines = append(lines, renderRow(plainLine, innerW, line))
+		lines = append(lines, renderRows(plainLine, innerW, line, wrap)...)
 	}
 
 	// lipgloss.Style.Height() sets a minimum, not a maximum. Clamp and pad the
@@ -667,7 +671,7 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 		lines[innerH-1] = faintStyle.Width(innerW).Render("…")
 	} else {
 		for len(lines) < innerH {
-			lines = append(lines, renderRow(plainLine, innerW, ""))
+			lines = append(lines, renderRows(plainLine, innerW, "", false)...)
 		}
 	}
 
@@ -678,6 +682,23 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 		box = strings.TrimSuffix(box, "\n")
 	}
 	return title + "\n" + box
+}
+
+func renderRows(st lipgloss.Style, w int, s string, wrap bool) []string {
+	if !wrap {
+		return []string{renderRow(st, w, s)}
+	}
+	if w <= 0 {
+		return []string{""}
+	}
+
+	wrapped := ansi.Wrap(s, w, "")
+	parts := strings.Split(wrapped, "\n")
+	rows := make([]string, 0, len(parts))
+	for _, part := range parts {
+		rows = append(rows, st.Width(w).Render(part))
+	}
+	return rows
 }
 
 func (m model) renderHelpBox() string {
@@ -701,6 +722,7 @@ func (m model) renderHelpBox() string {
 				{"p", "Toggle Projects"},
 				{"d", "Toggle Details"},
 				{"a", "Toggle Logs"},
+				{"t", "Toggle wrap for Details and Logs"},
 			},
 		},
 		{
@@ -840,6 +862,7 @@ TOGGLES
   p        Show / hide the Projects pane
   d        Show / hide the Details pane
   a        Show / hide the Logs pane
+  t        Toggle wrapped text in Details and Logs
   ?        Show / hide the in-app hotkey help overlay
 
 GENERAL
