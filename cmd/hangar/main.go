@@ -275,9 +275,8 @@ func (m *model) focusPrev() {
 		m.focus = order[0]
 		return
 	}
-	idx--
-	if idx < 0 {
-		idx = len(order) - 1
+	if idx > 0 {
+		idx--
 	}
 	m.focus = order[idx]
 }
@@ -292,9 +291,8 @@ func (m *model) focusNext() {
 		m.focus = order[0]
 		return
 	}
-	idx++
-	if idx >= len(order) {
-		idx = 0
+	if idx < len(order)-1 {
+		idx++
 	}
 	m.focus = order[idx]
 }
