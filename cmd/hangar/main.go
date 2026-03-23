@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/SebastianKuehl/hangar/internal/logstream"
+	hangarruntime "github.com/SebastianKuehl/hangar/internal/runtime"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -25,12 +28,27 @@ const (
 	paneLogs
 )
 
+const maxLogLines = 4000
+
 type listPane struct {
 	title       string
 	visible     bool
 	placeholder string
 	items       []string
 	selected    int
+}
+
+type logChunkMsg struct {
+	serviceKey string
+	watchID    int
+	lines      []string
+	reset      bool
+}
+
+type logErrMsg struct {
+	serviceKey string
+	watchID    int
+	err        error
 }
 
 type model struct {
@@ -46,19 +64,28 @@ type model struct {
 	details  listPane
 	logs     listPane
 
-	cfg            Config // in-memory config; source of truth for UI
-	serviceRuntime []serviceRuntime
-	serviceStates  map[string]serviceTransition
-	serviceOwners  map[string]int32
-	runtimeRequest int
-	runtimePending bool
-	runtimePaused  bool
-	runtimeLoading bool
-	loadingTicker  bool
-	loadingGen     int
-	loadingFrame   int
-	modal          formModal
-	errMsg         string // transient error displayed in status bar
+	cfg              Config
+	serviceRuntime   []serviceRuntime
+	serviceStates    map[string]serviceTransition
+	serviceOwners    map[string]int32
+	runtimeRequest   int
+	runtimePending   bool
+	runtimePaused    bool
+	runtimeLoading   bool
+	loadingTicker    bool
+	loadingGen       int
+	loadingFrame     int
+	runtimeManager   *hangarruntime.Manager
+	logTailer        *logstream.Tailer
+	logEvents        chan tea.Msg
+	logLines         map[string][]string
+	logCancel        context.CancelFunc
+	logListenCtx     context.Context
+	logListenCancel  context.CancelFunc
+	logWatchID       int
+	followingService string
+	modal            formModal
+	errMsg           string
 }
 
 const loadingFrameInterval = 120 * time.Millisecond
@@ -86,16 +113,12 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 		icon := "◌"
 		if _, pending := states[serviceKey(project, s)]; pending {
 			icon = "◔"
-		}
-		if i < len(runtime) && runtime[i].known {
+		} else if i < len(runtime) && runtime[i].known {
 			if runtime[i].running {
 				icon = "●"
 			} else {
 				icon = "○"
 			}
-		}
-		if _, pending := states[serviceKey(project, s)]; pending {
-			icon = "◔"
 		}
 		out = append(out, icon+" "+s.Name)
 	}
@@ -103,34 +126,29 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 }
 
 func newModel() model {
-	cfg, _ := loadConfig() // ignore load error on startup; app still works with empty state
+	cfg, _ := loadConfig()
+	mgr, err := newRuntimeManager()
+
+	listenCtx, listenCancel := context.WithCancel(context.Background())
 
 	m := model{
-		cfg:           cfg,
-		focus:         paneProjects,
-		serviceStates: map[string]serviceTransition{},
-		serviceOwners: map[string]int32{},
-		projects: listPane{
-			title:       "Projects",
-			visible:     true,
-			placeholder: "",
-			items:       projectItems(cfg),
-		},
-		services: listPane{
-			title:       "Services",
-			visible:     true,
-			placeholder: "",
-		},
-		details: listPane{
-			title:       "Details",
-			visible:     true,
-			placeholder: "Select a service to inspect its runtime state.",
-		},
-		logs: listPane{
-			title:       "Logs",
-			visible:     true,
-			placeholder: "Select a service to inspect its runtime state.",
-		},
+		cfg:             cfg,
+		focus:           paneProjects,
+		serviceStates:   map[string]serviceTransition{},
+		serviceOwners:   map[string]int32{},
+		projects:        listPane{title: "Projects", visible: true, items: projectItems(cfg)},
+		services:        listPane{title: "Services", visible: true},
+		details:         listPane{title: "Details", visible: true, placeholder: "Select a service to inspect its runtime state."},
+		logs:            listPane{title: "Logs", visible: true, placeholder: "Select a service to inspect its runtime state."},
+		runtimeManager:  mgr,
+		logTailer:       logstream.NewTailer(250 * time.Millisecond),
+		logEvents:       make(chan tea.Msg, 32),
+		logLines:        map[string][]string{},
+		logListenCtx:    listenCtx,
+		logListenCancel: listenCancel,
+	}
+	if err != nil {
+		m.errMsg = "Error initializing hangar runtime: " + err.Error()
 	}
 	m.syncSelectionState()
 	m.runtimeLoading = m.shouldShowRuntimeLoading()
@@ -158,7 +176,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceRuntime = nil
 		m.syncSelectionState()
 		m.errMsg = ""
-		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
+		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 
 	case configErrMsg:
 		m.errMsg = "Error saving config: " + msg.err.Error()
@@ -182,7 +200,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileServiceTransitions(project, msg.runtime)
 		m.pruneServiceOwners(project, msg.runtime)
 		m.syncSelectionState()
-		return m, nil
+		return m, m.ensureLogTail()
 
 	case serviceControlMsg:
 		if msg.err != nil {
@@ -209,7 +227,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.serviceOwners[msg.serviceKey] = msg.startedPID
 		}
 		if msg.projectIndex == m.projects.selected {
-			return m, m.startRuntimeRefresh()
+			return m, tea.Batch(m.startRuntimeRefresh(), m.ensureLogTail())
 		}
 		return m, nil
 
@@ -230,15 +248,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadingFrame = (m.loadingFrame + 1) % len(loadingFrames)
 		return m, m.loadingTickCmd()
 
+	case logChunkMsg:
+		if msg.watchID != m.logWatchID || msg.serviceKey != m.followingService {
+			return m, listenForLogMessage(m.logEvents, m.logListenCtx)
+		}
+		shouldAutoFollow := msg.reset || m.shouldAutoFollowLogs(msg.serviceKey)
+		if msg.reset {
+			m.logLines[msg.serviceKey] = append([]string(nil), msg.lines...)
+		} else {
+			m.logLines[msg.serviceKey] = trimLogLines(append(m.logLines[msg.serviceKey], msg.lines...))
+		}
+		if shouldAutoFollow && msg.serviceKey == m.selectedServiceKey() {
+			m.scrollLogsToBottom()
+		}
+		m.syncSelectionState()
+		return m, listenForLogMessage(m.logEvents, m.logListenCtx)
+
+	case logErrMsg:
+		if msg.watchID == m.logWatchID && msg.serviceKey == m.followingService {
+			m.errMsg = "Error tailing logs: " + msg.err.Error()
+		}
+		return m, listenForLogMessage(m.logEvents, m.logListenCtx)
+
 	case tea.KeyMsg:
 		k := msg.String()
-
-		// ctrl+c always quits, even when a modal is open.
 		if k == "ctrl+c" {
+			if m.logCancel != nil {
+				m.logCancel()
+			}
 			return m, tea.Quit
 		}
 
-		// Modal intercepts all remaining keys while open.
 		if m.modal.isOpen() {
 			submit, closeModal := m.modal.handleKey(k)
 			if closeModal {
@@ -264,6 +304,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showHelp = false
 				return m, nil
 			case "q":
+				if m.logCancel != nil {
+					m.logCancel()
+				}
 				return m, tea.Quit
 			default:
 				return m, nil
@@ -272,6 +315,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch k {
 		case "q":
+			if m.logCancel != nil {
+				m.logCancel()
+			}
 			return m, tea.Quit
 		case "?":
 			m.showHelp = true
@@ -280,7 +326,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == paneProjects {
 				m.modal.openCreateProject()
 			} else if m.focus == paneServices {
-				// A service must belong to a project.
 				if len(m.cfg.Projects) == 0 {
 					m.errMsg = "Create a project first before adding services."
 				} else {
@@ -320,7 +365,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.serviceRuntime = nil
 			m.syncSelectionState()
 			m.errMsg = ""
-			return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
+			return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 		case "s":
 			return m, m.startStopSelectedService()
 		case "R":
@@ -345,12 +390,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
-				return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
+				return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
 				m.invalidateRuntimeRefresh(false)
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			return m, nil
 		case "k", "up":
@@ -360,12 +405,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
-				return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
+				return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
 				m.invalidateRuntimeRefresh(false)
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			return m, nil
 		}
@@ -481,8 +526,17 @@ func (m *model) syncSelectionState() {
 	transition := m.selectedServiceTransition()
 	m.details.placeholder = ""
 	m.details.items = serviceDetailsItems(project, service, runtime, transition)
+
+	key := serviceKey(project, service)
+	if lines := m.logLines[key]; len(lines) > 0 {
+		m.logs.placeholder = ""
+		m.logs.items = lines
+		m.logs.selected = clamp(m.logs.selected, 0, len(lines)-1)
+		return
+	}
 	m.logs.placeholder = ""
 	m.logs.items = serviceLogItems(project, service, runtime, transition)
+	m.logs.selected = clamp(m.logs.selected, 0, len(m.logs.items)-1)
 }
 
 func (m *model) startStopSelectedService() tea.Cmd {
@@ -634,6 +688,163 @@ func (m model) selectedServiceTransition() *serviceTransition {
 	return &transition
 }
 
+func (m model) selectedServiceKey() string {
+	project, ok := m.selectedProject()
+	if !ok {
+		return ""
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return ""
+	}
+	return serviceKey(project, service)
+}
+
+func (m *model) selectedLogPath() (string, string, bool) {
+	project, ok := m.selectedProject()
+	if !ok || m.runtimeManager == nil {
+		return "", "", false
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return "", "", false
+	}
+	key := serviceKey(project, service)
+	if m.services.selected >= 0 && m.services.selected < len(m.serviceRuntime) {
+		if path := m.serviceRuntime[m.services.selected].runtime.LogPath; path != "" {
+			return key, path, true
+		}
+	}
+	return key, m.runtimeManager.LogPath(runtimeServiceConfig(project, service)), true
+}
+
+func (m *model) ensureLogTail() tea.Cmd {
+	key, _, ok := m.selectedLogPath()
+	if !ok {
+		if m.logCancel != nil {
+			m.logCancel()
+			m.logCancel = nil
+		}
+		m.followingService = ""
+		return nil
+	}
+	if key == m.followingService && m.logCancel != nil {
+		return nil
+	}
+	return m.restartLogTail()
+}
+
+func (m *model) restartLogTail() tea.Cmd {
+	if m.logCancel != nil {
+		m.logCancel()
+		m.logCancel = nil
+	}
+	if m.logListenCancel != nil {
+		m.logListenCancel()
+	}
+	listenCtx, listenCancel := context.WithCancel(context.Background())
+	m.logListenCtx = listenCtx
+	m.logListenCancel = listenCancel
+	key, logPath, ok := m.selectedLogPath()
+	if !ok || m.logTailer == nil {
+		m.followingService = ""
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.logCancel = cancel
+	m.logWatchID++
+	watchID := m.logWatchID
+	m.followingService = key
+	if key == m.selectedServiceKey() {
+		m.scrollLogsToBottom()
+	}
+	if m.logEvents == nil {
+		m.logEvents = make(chan tea.Msg, 32)
+	}
+	outbox := m.logEvents
+	tailer := m.logTailer
+
+	go func() {
+		events := make(chan logstream.LogEvent, 8)
+		go func() {
+			defer close(events)
+			_ = tailer.TailFile(ctx, logPath, true, 200, events)
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				var msg tea.Msg
+				if event.Err != nil {
+					msg = logErrMsg{serviceKey: key, watchID: watchID, err: event.Err}
+				} else {
+					msg = logChunkMsg{serviceKey: key, watchID: watchID, lines: event.Lines, reset: event.Reset}
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case outbox <- msg:
+				}
+			}
+		}
+	}()
+
+	return listenForLogMessage(m.logEvents, m.logListenCtx)
+}
+
+func listenForLogMessage(ch <-chan tea.Msg, ctx context.Context) tea.Cmd {
+	if ch == nil || ctx == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return msg
+		}
+	}
+}
+
+func (m *model) shouldAutoFollowLogs(serviceKey string) bool {
+	if serviceKey != m.selectedServiceKey() {
+		return false
+	}
+	if len(m.logs.items) == 0 {
+		return true
+	}
+	return m.logs.selected >= len(m.logs.items)-1
+}
+
+func (m *model) scrollLogsToBottom() {
+	key := m.selectedServiceKey()
+	if key == "" {
+		m.logs.selected = clamp(m.logs.selected, 0, len(m.logs.items)-1)
+		return
+	}
+	if lines := m.logLines[key]; len(lines) > 0 {
+		m.logs.selected = len(lines) - 1
+		return
+	}
+	m.logs.selected = clamp(m.logs.selected, 0, len(m.logs.items)-1)
+}
+
+func trimLogLines(lines []string) []string {
+	if len(lines) <= maxLogLines {
+		return lines
+	}
+	return append([]string(nil), lines[len(lines)-maxLogLines:]...)
+}
+
 func (m *model) reconcileServiceTransitions(project Project, runtime []serviceRuntime) {
 	for i, service := range project.Services {
 		key := serviceKey(project, service)
@@ -707,6 +918,10 @@ func retryHotkey(phase serviceTransitionPhase) string {
 		return "R"
 	}
 	return "s"
+}
+
+func runtimeContainsPID(runtime serviceRuntime, pid int32) bool {
+	return runtime.runtime.PID == int(pid)
 }
 
 func (m *model) focusOrder() []paneID {
@@ -873,7 +1088,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, s start/stop, r retry, R restart, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, s start/stop, i interrupt, r retry, R restart, ? help, q quit.")
 	}
 
 	var base string
@@ -948,7 +1163,6 @@ func (m model) viewMain() string {
 		if m.runtimeLoading {
 			section = m.renderRuntimeLoadingOverlay(col2+gap+col3, contentH)
 		}
-
 		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), section)
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -988,7 +1202,7 @@ func (m model) renderRuntimeLoadingOverlay(width, height int) string {
 		Render(strings.Join([]string{
 			lipgloss.NewStyle().Bold(true).Foreground(colorTitleFocused).Render(m.loadingIndicator() + " Checking running services"),
 			"",
-			"Scanning local processes and matching them to this project's services.",
+			"Refreshing persisted runtime metadata for this project's services.",
 			"Hangar will restore the pane contents as soon as detection finishes.",
 		}, "\n"))
 
@@ -1054,7 +1268,32 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 	innerW := max(0, width-4) // border (2) + horizontal padding (2)
 	innerH := max(0, boxH-2)  // border (2)
 
+	plainLine := lipgloss.NewStyle()
+	lines, selectedStart, selectedEnd := paneRows(p, innerW, focused, highlightSel, wrap)
+
+	// lipgloss.Style.Height() sets a minimum, not a maximum. Clamp and pad the
+	// number of rendered lines so panes always fit their allocated viewport.
+	if innerH == 0 {
+		lines = nil
+	} else {
+		lines = visiblePaneRows(lines, innerH, selectedStart, selectedEnd)
+		for len(lines) < innerH {
+			lines = append(lines, renderRows(plainLine, innerW, "", false)...)
+		}
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	// Note: Pane content is intentionally placeholder data for now.
+	box := style.Render(content)
+	for strings.HasSuffix(box, "\n") {
+		box = strings.TrimSuffix(box, "\n")
+	}
+	return title + "\n" + box
+}
+
+func paneRows(p listPane, innerW int, focused bool, highlightSel bool, wrap bool) ([]string, int, int) {
 	lines := make([]string, 0, 2+len(p.items))
+	selectedStart, selectedEnd := -1, -1
 	if p.placeholder != "" {
 		lines = append(lines, renderRows(faintStyle, innerW, p.placeholder, wrap)...)
 		lines = append(lines, renderRows(lipgloss.NewStyle(), innerW, "", false)...)
@@ -1071,40 +1310,52 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 		}
 
 		line := prefix + it
+		style := plainLine
 		if i == p.selected {
 			switch {
 			case focused:
-				lines = append(lines, renderRows(selectedFocusedStyle, innerW, line, wrap)...)
+				style = selectedFocusedStyle
 			case highlightSel:
-				lines = append(lines, renderRows(selectedContextStyle, innerW, line, wrap)...)
+				style = selectedContextStyle
 			default:
-				lines = append(lines, renderRows(selectedStyle, innerW, line, wrap)...)
+				style = selectedStyle
 			}
-			continue
 		}
-		lines = append(lines, renderRows(plainLine, innerW, line, wrap)...)
+
+		itemRows := renderRows(style, innerW, line, wrap)
+		if i == p.selected {
+			selectedStart = len(lines)
+			selectedEnd = len(lines) + len(itemRows) - 1
+		}
+		lines = append(lines, itemRows...)
+	}
+	return lines, selectedStart, selectedEnd
+}
+
+func visiblePaneRows(lines []string, height, selectedStart, selectedEnd int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if len(lines) <= height {
+		return append([]string(nil), lines...)
 	}
 
-	// lipgloss.Style.Height() sets a minimum, not a maximum. Clamp and pad the
-	// number of rendered lines so panes always fit their allocated viewport.
-	if innerH == 0 {
-		lines = nil
-	} else if len(lines) > innerH {
-		lines = lines[:innerH]
-		lines[innerH-1] = faintStyle.Width(innerW).Render("…")
-	} else {
-		for len(lines) < innerH {
-			lines = append(lines, renderRows(plainLine, innerW, "", false)...)
-		}
+	start := 0
+	if selectedEnd >= height {
+		start = selectedEnd - height + 1
+	}
+	if selectedStart >= 0 && selectedStart < start {
+		start = selectedStart
+	}
+	maxStart := len(lines) - height
+	if start > maxStart {
+		start = maxStart
+	}
+	if start < 0 {
+		start = 0
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	// Note: Pane content is intentionally placeholder data for now.
-	box := style.Render(content)
-	for strings.HasSuffix(box, "\n") {
-		box = strings.TrimSuffix(box, "\n")
-	}
-	return title + "\n" + box
+	return append([]string(nil), lines[start:start+height]...)
 }
 
 func renderRows(st lipgloss.Style, w int, s string, wrap bool) []string {

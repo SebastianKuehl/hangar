@@ -56,15 +56,18 @@ bash install.sh   # rebuilds the binary in-place
 
 ## Project creation
 
-The project path is optional. When you provide one, Hangar normalizes it to the current operating system, so relative paths and `~`-prefixed home paths work on macOS, Linux, and Windows.
+Creating a project now requires a project folder. The entered path is normalized to the current operating system, so relative paths and `~`-prefixed home paths work on macOS, Linux, and Windows.
 
-When a project is saved with a path, Hangar scans that folder for Node and Bun services by looking for `package.json` files that define a `start` script. Each discovered service is added to the config automatically with either `npm run start` or `bun run start`.
-
-If you leave the project path blank, Hangar creates the project without scanning the filesystem. This is useful when a project's services live under different root folders and will be added manually later.
+When a project is saved, Hangar scans that folder for Node and Bun services by looking for `package.json` files that define a `start` script. Each discovered service is added to the config automatically with either `npm run start` or `bun run start`.
 
 ## Service runtime panes
 
-When you move the cursor through the Services pane, Hangar now polls the local process list and tries to match each service to a running Node/Bun process by service directory and runtime. The Services pane shows:
+Hangar now manages service runtime state through durable files under `~/hangar`:
+
+- `~/hangar/logs/` stores combined stdout/stderr logs per managed service
+- `~/hangar/run/` stores runtime metadata (PID, command, log path, timestamps)
+
+When you move the cursor through the Services pane, Hangar refreshes persisted runtime metadata and verifies whether the recorded PID is still alive. The Services pane shows:
 
 - `●` when Hangar found a matching running process
 - `○` when no matching process is running
@@ -74,10 +77,10 @@ During the initial runtime pre-check for the selected project, Hangar overlays t
 
 If a runtime scan takes too long, you can press `i` to interrupt it. Hangar will ignore the in-flight result and stop auto-refreshing that project until you press `r` to retry or move to another selection.
 
-The Details pane updates with the selected service's path, command, process status, PID, memory, and start time.
+The Details pane updates with the selected service's path, command, status, PID, working directory, and log file path.
 
-The Logs pane now reflects the selected service's runtime state too. For already-running external processes, Hangar can show detection details but cannot attach to arbitrary existing stdout streams cross-platform, so the pane explains that limitation instead of faking log output.
+The Logs pane follows the selected service's log file instead of attaching directly to process pipes. That means you can switch between services without interrupting them, quit the TUI, reopen `hangar`, and immediately reattach to the same recent log backlog and ongoing output.
 
-When you press `s`, Hangar starts a stopped service or force-stops the confident running targets for that service. The selected service stays locked until runtime polling confirms the requested state, but you can still move around the UI and trigger `s` for other services while that happens.
+When you press `s`, Hangar starts a stopped service as a detached child process, appends lifecycle markers to its log, and persists runtime metadata. Stopping a service signals its managed process group and keeps the historical log file available after exit.
 
-When you press `R` in the Services pane, Hangar restarts the selected service by stopping the matched process tree and launching the configured start command again. When you press `R` in the Projects pane, Hangar applies that same restart/start behavior across every service in the selected project that already has runtime information loaded.
+When you press `R` in the Services pane, Hangar restarts the selected service. When you press `R` in the Projects pane, Hangar applies that same restart/start behavior across every service in the selected project that already has runtime information loaded.
