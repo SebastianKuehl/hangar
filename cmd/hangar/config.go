@@ -138,6 +138,9 @@ func addService(projectIndex int, name, path string) (Config, error) {
 	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
 		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
 	}
+	if strings.TrimSpace(cfg.Projects[projectIndex].Path) == "" && strings.TrimSpace(path) == "" {
+		return cfg, fmt.Errorf("service path is required when the project has no path")
+	}
 
 	normalizedPath, err := normalizeServicePath(path, cfg.Projects[projectIndex].Path)
 	if err != nil {
@@ -161,6 +164,9 @@ func newProject(name, inputPath string) (Project, error) {
 	projectPath, err := normalizeProjectPath(inputPath)
 	if err != nil {
 		return Project{}, err
+	}
+	if projectPath == "" {
+		return Project{Name: name}, nil
 	}
 
 	info, err := os.Stat(projectPath)
@@ -187,9 +193,6 @@ func normalizeProjectPath(inputPath string) (string, error) {
 	path, err := normalizeAbsolutePath(inputPath, "")
 	if err != nil {
 		return "", err
-	}
-	if path == "" {
-		return "", fmt.Errorf("project path is required")
 	}
 	return path, nil
 }

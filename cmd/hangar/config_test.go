@@ -25,6 +25,16 @@ func TestNormalizeProjectPath(t *testing.T) {
 	}
 }
 
+func TestNormalizeProjectPathAllowsEmptyValue(t *testing.T) {
+	got, err := normalizeProjectPath("")
+	if err != nil {
+		t.Fatalf("normalizeProjectPath returned error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("normalizeProjectPath = %q, want empty string", got)
+	}
+}
+
 func TestNormalizeServicePathUsesProjectBase(t *testing.T) {
 	projectDir := t.TempDir()
 	serviceDir := filepath.Join(projectDir, "services", "api")
@@ -123,6 +133,34 @@ func TestAddProjectDiscoversServicesAndPersistsConfig(t *testing.T) {
 	}
 }
 
+func TestAddProjectAllowsEmptyPathWithoutDiscovery(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	cfg, err := addProject("Distributed", "")
+	if err != nil {
+		t.Fatalf("addProject returned error: %v", err)
+	}
+
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
+	}
+
+	project := cfg.Projects[0]
+	want := Project{Name: "Distributed"}
+	if !reflect.DeepEqual(project, want) {
+		t.Fatalf("project = %#v, want %#v", project, want)
+	}
+
+	reloaded, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig returned error: %v", err)
+	}
+	if !reflect.DeepEqual(reloaded, cfg) {
+		t.Fatalf("loadConfig() = %#v, want %#v", reloaded, cfg)
+	}
+}
+
 func TestAddServiceInfersCommand(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("HOME", configHome)
@@ -152,6 +190,23 @@ func TestAddServiceInfersCommand(t *testing.T) {
 	want := Service{Name: "web", Path: filepath.Join("apps", "web"), Command: "bun run start"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("service = %#v, want %#v", got, want)
+	}
+}
+
+func TestAddServiceRequiresPathForPathlessProject(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{Name: "Distributed"},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	if _, err := addService(0, "web", ""); err == nil {
+		t.Fatal("expected addService to reject a blank service path for a pathless project")
 	}
 }
 

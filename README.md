@@ -53,9 +53,11 @@ bash install.sh   # rebuilds the binary in-place
 
 ## Project creation
 
-Creating a project now requires a project folder. The entered path is normalized to the current operating system, so relative paths and `~`-prefixed home paths work on macOS, Linux, and Windows.
+The project path is optional. When you provide one, Hangar normalizes it to the current operating system, so relative paths and `~`-prefixed home paths work on macOS, Linux, and Windows.
 
-When a project is saved, Hangar scans that folder for Node and Bun services by looking for `package.json` files that define a `start` script. Each discovered service is added to the config automatically with either `npm run start` or `bun run start`.
+When a project is saved with a path, Hangar scans that folder for Node and Bun services by looking for `package.json` files that define a `start` script. Each discovered service is added to the config automatically with either `npm run start` or `bun run start`.
+
+If you leave the project path blank, Hangar creates the project without scanning the filesystem. This is useful when a project's services live under different root folders and will be added manually later.
 
 ## Service runtime panes
 

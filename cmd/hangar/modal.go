@@ -45,19 +45,23 @@ func (f *formModal) openCreateProject() {
 		mode: modalCreateProject,
 		fields: []formField{
 			{label: "Project name", required: true},
-			{label: "Project path", required: true},
+			{label: "Project path (optional)"},
 		},
 	}
 }
 
 // openCreateService resets the modal for service creation within a named project.
-func (f *formModal) openCreateService(projectName string) {
+func (f *formModal) openCreateService(projectName string, requirePath bool) {
+	pathLabel := "Path (optional)"
+	if requirePath {
+		pathLabel = "Path"
+	}
 	*f = formModal{
 		mode:        modalCreateService,
 		projectName: projectName,
 		fields: []formField{
 			{label: "Service name", required: true},
-			{label: "Path (optional)"},
+			{label: pathLabel, required: requirePath},
 		},
 	}
 }

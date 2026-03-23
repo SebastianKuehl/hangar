@@ -266,8 +266,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.cfg.Projects) == 0 {
 					m.errMsg = "Create a project first before adding services."
 				} else {
-					projectName := m.cfg.Projects[m.projects.selected].Name
-					m.modal.openCreateService(projectName)
+					project := m.cfg.Projects[m.projects.selected]
+					m.modal.openCreateService(project.Name, strings.TrimSpace(project.Path) == "")
 				}
 			}
 			return m, nil
