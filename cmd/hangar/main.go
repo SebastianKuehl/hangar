@@ -108,10 +108,12 @@ func projectItems(cfg Config) []string {
 }
 
 // serviceItems returns the service names for a project with runtime icons.
-func serviceItems(project Project, runtime []serviceRuntime, states map[string]serviceTransition) []string {
+// loadingFrame is the current spinner frame index used for services whose
+// runtime status is not yet known.
+func serviceItems(project Project, runtime []serviceRuntime, states map[string]serviceTransition, loadingFrame int) []string {
 	out := make([]string, 0, len(project.Services))
 	for i, s := range project.Services {
-		icon := "◌"
+		var icon string
 		if _, pending := states[serviceKey(project, s)]; pending {
 			icon = "◔"
 		} else if i < len(runtime) && runtime[i].known {
@@ -120,6 +122,8 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 			} else {
 				icon = "○"
 			}
+		} else {
+			icon = loadingFrames[loadingFrame%len(loadingFrames)]
 		}
 		out = append(out, icon+" "+s.Name)
 	}
@@ -329,6 +333,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loadingFrame = (m.loadingFrame + 1) % len(loadingFrames)
+		m.syncSelectionState()
 		return m, m.loadingTickCmd()
 
 	case logChunkMsg:
@@ -606,13 +611,6 @@ func (m model) shouldShowRuntimeLoading() bool {
 	return false
 }
 
-func (m model) loadingIndicator() string {
-	if len(loadingFrames) == 0 {
-		return "..."
-	}
-	return loadingFrames[m.loadingFrame%len(loadingFrames)]
-}
-
 func (m *model) syncSelectionState() {
 	m.projects.items = projectItems(m.cfg)
 	m.projects.selected = clamp(m.projects.selected, 0, len(m.projects.items)-1)
@@ -632,7 +630,7 @@ func (m *model) syncSelectionState() {
 	if len(m.serviceRuntime) != len(project.Services) {
 		m.serviceRuntime = make([]serviceRuntime, len(project.Services))
 	}
-	m.services.items = serviceItems(project, m.serviceRuntime, m.serviceStates)
+	m.services.items = serviceItems(project, m.serviceRuntime, m.serviceStates, m.loadingFrame)
 	m.services.selected = clamp(m.services.selected, 0, len(project.Services)-1)
 
 	service, ok := m.selectedService()
@@ -1320,15 +1318,9 @@ func (m model) viewMain() string {
 			col2 := m.width - col1 - gap
 			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight, false)
 			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
-			if m.runtimeLoading {
-				mid = m.renderRuntimeLoadingOverlay(col2, contentH)
-			}
 			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
 		} else {
 			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, serviceHighlight, false)
-			if m.runtimeLoading {
-				out = m.renderRuntimeLoadingOverlay(m.width, contentH)
-			}
 		}
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -1345,9 +1337,6 @@ func (m model) viewMain() string {
 		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 		right := m.renderRightColumn(col3, contentH)
 		section := lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
-		if m.runtimeLoading {
-			section = m.renderRuntimeLoadingOverlay(col2+gap+col3, contentH)
-		}
 		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), section)
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -1357,41 +1346,8 @@ func (m model) viewMain() string {
 	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 	right := m.renderRightColumn(col3, contentH)
 	section := lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
-	if m.runtimeLoading {
-		section = m.renderRuntimeLoadingOverlay(m.width, contentH)
-	}
 	out = section
 	return clampToViewport(m.width, m.height, out+statusBar)
-}
-
-func (m model) renderRuntimeLoadingOverlay(width, height int) string {
-	if width <= 0 || height <= 0 {
-		return ""
-	}
-
-	mask := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Render("")
-
-	maxBoxW := min(58, width-4)
-	if maxBoxW < 24 {
-		maxBoxW = min(width, 24)
-	}
-
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorBorderFocused).
-		Padding(1, 2).
-		Width(maxBoxW).
-		Render(strings.Join([]string{
-			lipgloss.NewStyle().Bold(true).Foreground(colorTitleFocused).Render(m.loadingIndicator() + " Checking running services"),
-			"",
-			"Refreshing persisted runtime metadata for this project's services.",
-			"Hangar will restore the pane contents as soon as detection finishes.",
-		}, "\n"))
-
-	return overlayBoxCentered(width, height, mask, box)
 }
 
 func (m model) renderRightColumn(width, height int) string {
