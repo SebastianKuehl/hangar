@@ -9,34 +9,154 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// modalMode distinguishes which creation form is active.
+// modalMode distinguishes which form is active.
 type modalMode int
 
 const (
-	modalNone          modalMode = iota
-	modalCreateProject           // "c" pressed in projects pane
-	modalCreateService           // "c" pressed in services pane
+	modalNone modalMode = iota
+	modalCreateProject
+	modalEditProject
+	modalCreateService
+	modalEditService
 )
 
-// formField holds one labelled text-input slot.
+type formFieldKind int
+
+const (
+	fieldText formFieldKind = iota
+	fieldSelect
+)
+
+// formField holds one labelled form slot.
 type formField struct {
-	label    string
-	value    string
-	required bool
+	label       string
+	value       string
+	required    bool
+	kind        formFieldKind
+	options     []string
+	optionIndex int
+	customValue string
 }
 
-// formModal tracks all state for the create-project / create-service overlay.
+func newSelectField(label string, required bool, options []string, selected string) formField {
+	field := formField{
+		label:    label,
+		required: required,
+		kind:     fieldSelect,
+	}
+	field.setOptions(options, selected)
+	return field
+}
+
+func newCommandField(label string, required bool, options []string, command string) formField {
+	field := formField{
+		label:    label,
+		required: required,
+		kind:     fieldSelect,
+	}
+	field.setCommandOptions(options, command)
+	return field
+}
+
+func (f *formField) setOptions(options []string, selected string) {
+	if len(options) == 0 {
+		options = []string{""}
+	}
+	f.options = append([]string(nil), options...)
+	f.optionIndex = 0
+
+	selected = strings.TrimSpace(selected)
+	if selected != "" {
+		for i, option := range f.options {
+			if option == selected {
+				f.optionIndex = i
+				f.value = option
+				return
+			}
+		}
+		f.options = append(f.options, selected)
+		f.optionIndex = len(f.options) - 1
+	}
+
+	f.value = f.options[f.optionIndex]
+}
+
+func (f *formField) setCommandOptions(options []string, command string) {
+	f.options = append([]string(nil), options...)
+	f.options = append(f.options, "__custom__")
+	f.optionIndex = 0
+	f.value = ""
+	f.customValue = ""
+
+	command = strings.TrimSpace(command)
+	if command == "" {
+		if len(f.options) > 0 {
+			f.value = f.options[f.optionIndex]
+		}
+		return
+	}
+
+	for i, option := range f.options {
+		if option == command {
+			f.optionIndex = i
+			f.value = option
+			return
+		}
+	}
+
+	f.optionIndex = len(f.options) - 1
+	f.value = "__custom__"
+	f.customValue = command
+}
+
+func (f *formField) cycleOption(step int) {
+	if f.kind != fieldSelect || len(f.options) == 0 {
+		return
+	}
+	f.optionIndex = (f.optionIndex + step + len(f.options)) % len(f.options)
+	f.value = f.options[f.optionIndex]
+}
+
+func (f formField) clone() formField {
+	cloned := f
+	if f.options != nil {
+		cloned.options = append([]string(nil), f.options...)
+	}
+	return cloned
+}
+
+func (f *formField) selectedOption() string {
+	if f.kind != fieldSelect || f.optionIndex < 0 || f.optionIndex >= len(f.options) {
+		return ""
+	}
+	return f.options[f.optionIndex]
+}
+
+func (f *formField) isCustomSelected() bool {
+	return f.selectedOption() == "__custom__"
+}
+
+// formModal tracks all state for the project / service overlay.
 type formModal struct {
 	mode        modalMode
 	fields      []formField
 	activeField int
 	errMsg      string
-	projectName string // set when mode == modalCreateService
+	project     Project
+	projectName string
 }
 
 // isOpen reports whether any modal is currently visible.
 func (f *formModal) isOpen() bool {
 	return f.mode != modalNone
+}
+
+func (f *formModal) isServiceMode() bool {
+	return f.mode == modalCreateService || f.mode == modalEditService
+}
+
+func (f *formModal) isEditMode() bool {
+	return f.mode == modalEditProject || f.mode == modalEditService
 }
 
 // openCreateProject resets the modal for project creation.
@@ -50,20 +170,106 @@ func (f *formModal) openCreateProject() {
 	}
 }
 
-// openCreateService resets the modal for service creation within a named project.
-func (f *formModal) openCreateService(projectName string, requirePath bool) {
+// openEditProject resets the modal for project editing.
+func (f *formModal) openEditProject(project Project) {
+	*f = formModal{
+		mode: modalEditProject,
+		fields: []formField{
+			{label: "Project name", value: project.Name, required: true},
+			{label: "Project path (optional)", value: project.Path},
+		},
+	}
+}
+
+// openCreateService resets the modal for service creation within a project.
+func (f *formModal) openCreateService(project Project) {
 	pathLabel := "Path (optional)"
-	if requirePath {
+	pathRequired := strings.TrimSpace(project.Path) == ""
+	if pathRequired {
 		pathLabel = "Path"
 	}
 	*f = formModal{
 		mode:        modalCreateService,
-		projectName: projectName,
+		project:     project,
+		projectName: project.Name,
 		fields: []formField{
 			{label: "Service name", required: true},
-			{label: pathLabel, required: requirePath},
+			{label: pathLabel, required: pathRequired},
+			{label: "Custom command", required: true},
 		},
 	}
+	f.syncServiceCommandField("")
+}
+
+// openEditService resets the modal for service editing within a project.
+func (f *formModal) openEditService(project Project, service Service) {
+	*f = formModal{
+		mode:        modalEditService,
+		project:     project,
+		projectName: project.Name,
+		fields: []formField{
+			{label: "Service name", value: service.Name, required: true},
+			{label: "Path (optional)", value: service.Path},
+			newCommandField("Command", true, nil, service.Command),
+		},
+	}
+	f.syncServiceCommandField(service.Command)
+}
+
+func (f *formModal) commandField() *formField {
+	if !f.isServiceMode() || len(f.fields) < 3 {
+		return nil
+	}
+	return &f.fields[2]
+}
+
+func (f *formModal) selectedCommand() string {
+	field := f.commandField()
+	if field == nil || field.isCustomSelected() {
+		return ""
+	}
+	return strings.TrimSpace(field.selectedOption())
+}
+
+func (f *formModal) customCommand() string {
+	field := f.commandField()
+	if field == nil {
+		return ""
+	}
+	if !field.isCustomSelected() {
+		return ""
+	}
+	return strings.TrimSpace(field.customValue)
+}
+
+func (f *formModal) syncServiceCommandField(existingCommand string) {
+	if !f.isServiceMode() || len(f.fields) < 3 {
+		return
+	}
+
+	commandField := &f.fields[2]
+	existingCustom := commandField.customValue
+	if existingCustom == "" {
+		existingCustom = strings.TrimSpace(existingCommand)
+	}
+
+	options := []string(nil)
+	if strings.TrimSpace(f.path()) != "" {
+		options = serviceCommandOptions(f.project, f.path(), "")
+	}
+
+	selected := commandField.selectedOption()
+	command := strings.TrimSpace(existingCommand)
+	if commandField.isCustomSelected() {
+		command = existingCustom
+	} else if selected != "" && selected != "__custom__" {
+		command = selected
+	}
+
+	commandField.label = "Command"
+	commandField.required = true
+	commandField.kind = fieldSelect
+	commandField.setCommandOptions(options, command)
 }
 
 // close dismisses the modal without submitting.
@@ -74,24 +280,73 @@ func (f *formModal) close() {
 // handleKey processes a key event while the modal is open.
 // Returns (shouldSubmit, shouldClose).
 func (f *formModal) handleKey(k string) (submit bool, close bool) {
+	if f.activeField >= 0 && f.activeField < len(f.fields) {
+		cur := &f.fields[f.activeField]
+		if cur.kind == fieldSelect && cur.isCustomSelected() {
+			switch k {
+			case "backspace":
+				if len(cur.customValue) == 0 {
+					return false, false
+				}
+				runes := []rune(cur.customValue)
+				cur.customValue = string(runes[:len(runes)-1])
+				return false, false
+			case "left", "right":
+				f.errMsg = ""
+				if k == "left" {
+					cur.cycleOption(-1)
+				} else {
+					cur.cycleOption(1)
+				}
+				return false, false
+			default:
+				if utf8.RuneCountInString(k) == 1 {
+					cur.customValue += k
+					f.errMsg = ""
+					return false, false
+				}
+			}
+		}
+	}
+
 	switch k {
 	case "esc":
 		return false, true
 	case "tab", "down":
 		f.errMsg = ""
+		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex < len(f.fields[f.activeField].options)-1 {
+			f.fields[f.activeField].cycleOption(1)
+			return false, false
+		}
 		f.activeField = (f.activeField + 1) % len(f.fields)
 	case "shift+tab", "up":
 		f.errMsg = ""
+		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex > 0 {
+			f.fields[f.activeField].cycleOption(-1)
+			return false, false
+		}
 		f.activeField = (f.activeField - 1 + len(f.fields)) % len(f.fields)
+	case "left", "k":
+		if f.fields[f.activeField].kind == fieldSelect {
+			f.errMsg = ""
+			f.fields[f.activeField].cycleOption(-1)
+		}
+	case "right", "j", " ":
+		if f.fields[f.activeField].kind == fieldSelect {
+			f.errMsg = ""
+			f.fields[f.activeField].cycleOption(1)
+		}
 	case "enter":
 		if f.activeField < len(f.fields)-1 {
-			// Advance to next field.
 			f.activeField++
 			return false, false
 		}
-		// Last field — validate and submit.
 		for _, fld := range f.fields {
-			if fld.required && strings.TrimSpace(fld.value) == "" {
+			if fld.kind == fieldSelect && fld.required && fld.isCustomSelected() && strings.TrimSpace(fld.customValue) == "" {
+				f.errMsg = "\"" + fld.label + "\" is required."
+				return false, false
+			}
+			if fld.kind != fieldSelect && fld.required && strings.TrimSpace(fld.value) == "" {
 				f.errMsg = "\"" + fld.label + "\" is required."
 				return false, false
 			}
@@ -99,15 +354,33 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		return true, false
 	case "backspace":
 		cur := &f.fields[f.activeField]
-		if len(cur.value) > 0 {
-			// Safe rune-aware trim of last character.
-			runes := []rune(cur.value)
-			cur.value = string(runes[:len(runes)-1])
+		if cur.kind == fieldSelect && cur.isCustomSelected() {
+			if len(cur.customValue) == 0 {
+				return false, false
+			}
+			runes := []rune(cur.customValue)
+			cur.customValue = string(runes[:len(runes)-1])
+			return false, false
+		}
+		if cur.kind != fieldText || len(cur.value) == 0 {
+			return false, false
+		}
+		runes := []rune(cur.value)
+		cur.value = string(runes[:len(runes)-1])
+		if f.isServiceMode() && f.activeField == 1 {
+			f.syncServiceCommandField("")
 		}
 	default:
-		// Accept a single Unicode rune (handles multi-byte UTF-8 characters).
-		if utf8.RuneCountInString(k) == 1 {
-			f.fields[f.activeField].value += k
+		cur := &f.fields[f.activeField]
+		if cur.kind == fieldSelect && cur.isCustomSelected() && utf8.RuneCountInString(k) == 1 {
+			cur.customValue += k
+			return false, false
+		}
+		if cur.kind == fieldText && utf8.RuneCountInString(k) == 1 {
+			cur.value += k
+			if f.isServiceMode() && f.activeField == 1 {
+				f.syncServiceCommandField("")
+			}
 		}
 	}
 	return false, false
@@ -121,7 +394,7 @@ func (f *formModal) name() string {
 	return strings.TrimSpace(f.fields[0].value)
 }
 
-// path returns the trimmed value of the second field (always the optional path).
+// path returns the trimmed value of the second field (always the path).
 func (f *formModal) path() string {
 	if len(f.fields) < 2 {
 		return ""
@@ -129,11 +402,38 @@ func (f *formModal) path() string {
 	return strings.TrimSpace(f.fields[1].value)
 }
 
+// command returns the custom command when present, otherwise the selected runtime command.
+func (f *formModal) command() string {
+	if custom := f.customCommand(); custom != "" {
+		return custom
+	}
+	return f.selectedCommand()
+}
+
 // configErrMsg is sent to the model when a config I/O error occurs.
 type configErrMsg struct{ err error }
 
 // configSavedMsg is sent after a successful save, carrying the updated config.
 type configSavedMsg struct{ cfg Config }
+
+type serviceUpdatedMsg struct {
+	cfg              Config
+	projectIndex     int
+	serviceIndex     int
+	previousProject  Project
+	previousService  Service
+	previousRuntime  serviceRuntime
+	previousOwnedPID int32
+}
+
+type serviceRestartMsg struct {
+	projectIndex  int
+	serviceIndex  int
+	oldServiceKey string
+	newServiceKey string
+	startedPID    int32
+	err           error
+}
 
 // ---- rendering ----------------------------------------------------------------
 
@@ -169,8 +469,13 @@ func (m model) renderModal(screenW, screenH int) string {
 	f := &m.modal
 
 	title := "Create Project"
-	if f.mode == modalCreateService {
+	switch f.mode {
+	case modalEditProject:
+		title = "Edit Project"
+	case modalCreateService:
 		title = "Create Service"
+	case modalEditService:
+		title = "Edit Service"
 	}
 
 	lines := []string{
@@ -178,7 +483,7 @@ func (m model) renderModal(screenW, screenH int) string {
 		"",
 	}
 
-	if f.mode == modalCreateService && f.projectName != "" {
+	if f.isServiceMode() && f.projectName != "" {
 		projectLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
 		projectValueStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#c9d1d9"))
 		lines = append(lines,
@@ -194,21 +499,42 @@ func (m model) renderModal(screenW, screenH int) string {
 		}
 		lines = append(lines, label)
 
+		if fld.kind == fieldSelect {
+			for optionIndex, option := range fld.options {
+				marker := "○ "
+				if optionIndex == fld.optionIndex {
+					marker = "◉ "
+				}
+				optionLabel := option
+				if option == "__custom__" {
+					cursor := ""
+					if i == f.activeField && optionIndex == fld.optionIndex {
+						cursor = "▌"
+					}
+					optionLabel = "Custom: " + fld.customValue + cursor
+				}
+				display := ansi.Truncate(marker+optionLabel, 35, "…")
+				style := fieldInactiveStyle
+				if i == f.activeField && optionIndex == fld.optionIndex {
+					style = fieldActiveStyle
+				}
+				lines = append(lines, style.Render(display))
+			}
+			lines = append(lines, "")
+			continue
+		}
+
 		cursor := " "
 		if i == f.activeField {
 			cursor = "▌"
 		}
-		display := fld.value + cursor
-		// Truncate display to fit field width.
-		display = ansi.Truncate(display, 35, "…")
+		display := ansi.Truncate(fld.value+cursor, 35, "…")
 
-		var input string
+		style := fieldInactiveStyle
 		if i == f.activeField {
-			input = fieldActiveStyle.Render(display)
-		} else {
-			input = fieldInactiveStyle.Render(display)
+			style = fieldActiveStyle
 		}
-		lines = append(lines, input, "")
+		lines = append(lines, style.Render(display), "")
 	}
 
 	if f.errMsg != "" {
@@ -216,7 +542,7 @@ func (m model) renderModal(screenW, screenH int) string {
 	}
 
 	lines = append(lines,
-		modalHintStyle.Render("tab/↑↓ switch field  •  enter submit  •  esc cancel"),
+		modalHintStyle.Render("tab/↑↓ switch field  •  j/k or ←/→ choose option  •  enter submit  •  esc cancel"),
 	)
 
 	body := strings.Join(lines, "\n")
@@ -238,13 +564,53 @@ func saveProjectCmd(name, path string) tea.Cmd {
 	}
 }
 
-// saveServiceCmd returns a tea.Cmd that persists a new service asynchronously.
-func saveServiceCmd(projectIndex int, name, path string) tea.Cmd {
+func updateProjectCmd(projectIndex int, name, path string) tea.Cmd {
 	return func() tea.Msg {
-		cfg, err := addService(projectIndex, name, path)
+		cfg, err := updateProject(projectIndex, name, path)
 		if err != nil {
 			return configErrMsg{err}
 		}
 		return configSavedMsg{cfg}
+	}
+}
+
+// saveServiceCmd returns a tea.Cmd that persists a new service asynchronously.
+func saveServiceCmd(projectIndex int, name, path, command string) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := addService(projectIndex, name, path, command)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+func updateServiceCmd(projectIndex, serviceIndex int, name, path, command string, previousProject Project, previousService Service, previousRuntime serviceRuntime, previousOwnedPID int32) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := updateService(projectIndex, serviceIndex, name, path, command)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return serviceUpdatedMsg{
+			cfg:              cfg,
+			projectIndex:     projectIndex,
+			serviceIndex:     serviceIndex,
+			previousProject:  previousProject,
+			previousService:  previousService,
+			previousRuntime:  previousRuntime,
+			previousOwnedPID: previousOwnedPID,
+		}
+	}
+}
+
+func restartEditedServiceCmd(projectIndex, serviceIndex int, oldProject Project, oldService Service, oldRuntime serviceRuntime, oldOwnedPID int32, newProject Project, newService Service) tea.Cmd {
+	return func() tea.Msg {
+		oldKey := serviceKey(oldProject, oldService)
+		newKey := serviceKey(newProject, newService)
+		if err := stopServiceProcesses(oldRuntime, oldOwnedPID); err != nil {
+			return serviceRestartMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, oldServiceKey: oldKey, newServiceKey: newKey, err: err}
+		}
+		pid, err := startServiceProcess(newProject, newService)
+		return serviceRestartMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, oldServiceKey: oldKey, newServiceKey: newKey, startedPID: pid, err: err}
 	}
 }

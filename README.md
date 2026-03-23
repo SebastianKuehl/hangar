@@ -45,6 +45,7 @@ bash install.sh   # rebuilds the binary in-place
 - `p`: toggle Projects pane
 - `d`: toggle Details pane
 - `a`: toggle Logs pane
+- `e`: edit the selected project or service
 - `s`: start the selected service when stopped, or stop it when running
 - `i`: interrupt the current service check
 - `r`: retry an interrupted service check
@@ -59,6 +60,10 @@ bash install.sh   # rebuilds the binary in-place
 Creating a project now requires a project folder. The entered path is normalized to the current operating system, so relative paths and `~`-prefixed home paths work on macOS, Linux, and Windows.
 
 When a project is saved, Hangar scans that folder for Node and Bun services by looking for `package.json` files that define a `start` script. Each discovered service is added to the config automatically with either `npm run start` or `bun run start`.
+
+Press `e` with the cursor on a project or service to edit it. Project and service forms open prefilled with the current values.
+
+Service forms now include a command selector. When Hangar finds a runtime config such as a Node/Bun `package.json`, it lists the available scripts as selectable commands (for example `npm run dev`, `npm run start`, or `bun run test`).
 
 ## Service runtime panes
 

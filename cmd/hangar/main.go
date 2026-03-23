@@ -178,6 +178,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 
+	case serviceUpdatedMsg:
+		oldKey := serviceKey(msg.previousProject, msg.previousService)
+		m.cfg = msg.cfg
+		if oldKey != "" {
+			delete(m.serviceStates, oldKey)
+			delete(m.serviceOwners, oldKey)
+		}
+		m.syncSelectionState()
+		m.errMsg = ""
+		if msg.projectIndex != m.projects.selected {
+			return m, nil
+		}
+		project, ok := m.selectedProject()
+		if !ok || msg.serviceIndex < 0 || msg.serviceIndex >= len(project.Services) {
+			return m, nil
+		}
+		newService := project.Services[msg.serviceIndex]
+		newKey := serviceKey(project, newService)
+		if msg.serviceIndex < len(m.serviceRuntime) {
+			m.serviceRuntime[msg.serviceIndex] = serviceRuntime{}
+		}
+		if msg.previousRuntime.running {
+			m.serviceStates[newKey] = serviceTransition{targetRunning: true}
+			m.syncSelectionState()
+			return m, restartEditedServiceCmd(msg.projectIndex, msg.serviceIndex, msg.previousProject, msg.previousService, msg.previousRuntime, msg.previousOwnedPID, project, newService)
+		}
+		m.serviceRuntimeRequest++
+		m.syncSelectionState()
+		return m, refreshServiceRuntimeCmd(m.serviceRuntimeRequest, msg.projectIndex, msg.serviceIndex, project, newService)
+
 	case configErrMsg:
 		m.errMsg = "Error saving config: " + msg.err.Error()
 		return m, nil
@@ -229,6 +259,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.projectIndex == m.projects.selected {
 			return m, tea.Batch(m.startRuntimeRefresh(), m.ensureLogTail())
 		}
+		return m, nil
+
+	case serviceRestartMsg:
+		delete(m.serviceStates, msg.oldServiceKey)
+		delete(m.serviceOwners, msg.oldServiceKey)
+		if msg.err != nil {
+			delete(m.serviceStates, msg.newServiceKey)
+			m.errMsg = msg.err.Error()
+			m.syncSelectionState()
+			return m, nil
+		}
+		if msg.startedPID != 0 {
+			if m.serviceOwners == nil {
+				m.serviceOwners = map[string]int32{}
+			}
+			m.serviceOwners[msg.newServiceKey] = msg.startedPID
+		}
+		if msg.projectIndex != m.projects.selected {
+			return m, nil
+		}
+		project, ok := m.selectedProject()
+		if !ok || msg.serviceIndex < 0 || msg.serviceIndex >= len(project.Services) {
+			return m, nil
+		}
+		m.serviceRuntimeRequest++
+		return m, refreshServiceRuntimeCmd(m.serviceRuntimeRequest, msg.projectIndex, msg.serviceIndex, project, project.Services[msg.serviceIndex])
+
+	case serviceRuntimeRefreshMsg:
+		project, ok := m.selectedProject()
+		if !ok || msg.projectIndex != m.projects.selected || msg.requestID != m.serviceRuntimeRequest {
+			return m, nil
+		}
+		if msg.serviceIndex < 0 || msg.serviceIndex >= len(project.Services) || msg.serviceKey != serviceKey(project, project.Services[msg.serviceIndex]) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.errMsg = "Error detecting runtime state: " + msg.err.Error()
+			m.syncSelectionState()
+			return m, nil
+		}
+		if msg.serviceIndex >= len(m.serviceRuntime) {
+			return m, nil
+		}
+		m.serviceRuntime[msg.serviceIndex] = msg.runtime
+		if transition, ok := m.serviceStates[msg.serviceKey]; ok && msg.runtime.known && msg.runtime.running == transition.targetRunning {
+			delete(m.serviceStates, msg.serviceKey)
+		}
+		if owner, ok := m.serviceOwners[msg.serviceKey]; ok && owner != 0 && !runtimeContainsPID(msg.runtime, owner) {
+			delete(m.serviceOwners, msg.serviceKey)
+		}
+		m.errMsg = ""
+		m.syncSelectionState()
 		return m, nil
 
 	case runtimeTickMsg:
@@ -288,12 +370,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if submit {
 				name := m.modal.name()
 				path := m.modal.path()
+				command := m.modal.command()
 				mode := m.modal.mode
+				projectIndex := m.projects.selected
+				serviceIndex := m.services.selected
 				m.modal.close()
-				if mode == modalCreateProject {
+				switch mode {
+				case modalCreateProject:
 					return m, saveProjectCmd(name, path)
+				case modalEditProject:
+					return m, updateProjectCmd(projectIndex, name, path)
+				case modalCreateService:
+					return m, saveServiceCmd(projectIndex, name, path, command)
+				case modalEditService:
+					project, ok := m.selectedProject()
+					if !ok {
+						return m, nil
+					}
+					service, ok := m.selectedService()
+					if !ok {
+						return m, nil
+					}
+					return m, updateServiceCmd(projectIndex, serviceIndex, name, path, command, project, service, m.selectedServiceRuntime(), m.serviceOwners[serviceKey(project, service)])
 				}
-				return m, saveServiceCmd(m.projects.selected, name, path)
+				return m, nil
 			}
 			return m, nil
 		}
@@ -329,9 +429,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.cfg.Projects) == 0 {
 					m.errMsg = "Create a project first before adding services."
 				} else {
-					project := m.cfg.Projects[m.projects.selected]
-					m.modal.openCreateService(project.Name, strings.TrimSpace(project.Path) == "")
+					m.modal.openCreateService(m.cfg.Projects[m.projects.selected])
 				}
+			}
+			return m, nil
+		case "e":
+			if m.focus == paneProjects {
+				project, ok := m.selectedProject()
+				if !ok {
+					return m, nil
+				}
+				m.modal.openEditProject(project)
+				return m, nil
+			}
+			if m.focus == paneServices {
+				project, ok := m.selectedProject()
+				if !ok {
+					return m, nil
+				}
+				service, ok := m.selectedService()
+				if !ok {
+					return m, nil
+				}
+				m.modal.openEditService(project, service)
+				return m, nil
 			}
 			return m, nil
 		case "p":
@@ -1403,6 +1524,7 @@ func (m model) renderHelpBox() string {
 			name: "Create",
 			rows: [][2]string{
 				{"c", "Create project or service (context-sensitive)"},
+				{"e", "Edit selected project or service"},
 			},
 		},
 		{
@@ -1546,6 +1668,7 @@ TOGGLES
   d        Show / hide the Details pane
   a        Show / hide the Logs pane
   t        Toggle wrapped text in Details and Logs
+  e        Edit the selected project or service
   s        Start the selected service when stopped, or stop it when running
   i        Interrupt the current service check
   r        Retry an interrupted service check

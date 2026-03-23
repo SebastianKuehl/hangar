@@ -65,6 +65,15 @@ type runtimeRefreshMsg struct {
 	err          error
 }
 
+type serviceRuntimeRefreshMsg struct {
+	projectIndex int
+	serviceIndex int
+	requestID    int
+	serviceKey   string
+	runtime      serviceRuntime
+	err          error
+}
+
 type runtimeTickMsg time.Time
 
 var newRuntimeManager = func() (*hangarruntime.Manager, error) {

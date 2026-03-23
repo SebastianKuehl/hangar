@@ -129,8 +129,35 @@ func addProject(name, path string) (Config, error) {
 	return cfg, saveConfig(cfg)
 }
 
+// updateProject updates an existing project's editable fields and persists.
+func updateProject(projectIndex int, name, path string) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
+	}
+
+	projectPath, err := normalizeProjectPath(path)
+	if err != nil {
+		return cfg, err
+	}
+	info, err := os.Stat(projectPath)
+	if err != nil {
+		return cfg, err
+	}
+	if !info.IsDir() {
+		return cfg, fmt.Errorf("project path %q is not a directory", projectPath)
+	}
+
+	cfg.Projects[projectIndex].Name = strings.TrimSpace(name)
+	cfg.Projects[projectIndex].Path = projectPath
+	return cfg, saveConfig(cfg)
+}
+
 // addService appends a new service to the project at projectIndex and persists.
-func addService(projectIndex int, name, path string) (Config, error) {
+func addService(projectIndex int, name, path, command string) (Config, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return cfg, err
@@ -147,10 +174,46 @@ func addService(projectIndex int, name, path string) (Config, error) {
 		return cfg, err
 	}
 
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = inferServiceCommand(cfg.Projects[projectIndex], normalizedPath)
+	}
+
 	cfg.Projects[projectIndex].Services = append(
 		cfg.Projects[projectIndex].Services,
-		Service{Name: name, Path: normalizedPath, Command: inferServiceCommand(cfg.Projects[projectIndex], normalizedPath)},
+		Service{Name: name, Path: normalizedPath, Command: command},
 	)
+	return cfg, saveConfig(cfg)
+}
+
+// updateService updates an existing service's editable fields and persists.
+func updateService(projectIndex, serviceIndex int, name, path, command string) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
+	}
+	if serviceIndex < 0 || serviceIndex >= len(cfg.Projects[projectIndex].Services) {
+		return cfg, fmt.Errorf("service index %d out of range (have %d services)", serviceIndex, len(cfg.Projects[projectIndex].Services))
+	}
+
+	normalizedPath, err := normalizeServicePath(path, cfg.Projects[projectIndex].Path)
+	if err != nil {
+		return cfg, err
+	}
+
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = inferServiceCommand(cfg.Projects[projectIndex], normalizedPath)
+	}
+
+	cfg.Projects[projectIndex].Services[serviceIndex] = Service{
+		Name:    strings.TrimSpace(name),
+		Path:    normalizedPath,
+		Command: command,
+	}
 	return cfg, saveConfig(cfg)
 }
 
@@ -371,6 +434,34 @@ func startCommand(runtime string) string {
 	return "npm run start"
 }
 
+func scriptCommands(scripts map[string]string, runtime string) []string {
+	if len(scripts) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(scripts))
+	for name, command := range scripts {
+		if strings.TrimSpace(command) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return nil
+	}
+
+	prefix := "npm run "
+	if runtime == "bun" {
+		prefix = "bun run "
+	}
+
+	commands := make([]string, 0, len(names))
+	for _, name := range names {
+		commands = append(commands, prefix+name)
+	}
+	return commands
+}
+
 func isWithinBase(relativePath string) bool {
 	if relativePath == "." {
 		return true
@@ -380,15 +471,7 @@ func isWithinBase(relativePath string) bool {
 }
 
 func inferServiceCommand(project Project, servicePath string) string {
-	serviceDir := servicePath
-	if !filepath.IsAbs(serviceDir) {
-		switch serviceDir {
-		case "", ".":
-			serviceDir = project.Path
-		default:
-			serviceDir = filepath.Join(project.Path, serviceDir)
-		}
-	}
+	serviceDir := resolveServiceDir(project, servicePath)
 
 	manifestPath := filepath.Join(serviceDir, "package.json")
 	if data, err := os.ReadFile(manifestPath); err == nil {
@@ -402,6 +485,51 @@ func inferServiceCommand(project Project, servicePath string) string {
 		return "bun run start"
 	}
 	return "npm run start"
+}
+
+func serviceCommandOptions(project Project, servicePath, currentCommand string) []string {
+	serviceDir := resolveServiceDir(project, servicePath)
+	manifestPath := filepath.Join(serviceDir, "package.json")
+	if data, err := os.ReadFile(manifestPath); err == nil {
+		var manifest packageManifest
+		if err := json.Unmarshal(data, &manifest); err == nil {
+			options := scriptCommands(manifest.Scripts, detectRuntime(serviceDir, manifest))
+			if len(options) > 0 {
+				return appendCommandOption(options, currentCommand)
+			}
+		}
+	}
+
+	if strings.TrimSpace(currentCommand) != "" {
+		return []string{strings.TrimSpace(currentCommand)}
+	}
+	return []string{inferServiceCommand(project, servicePath)}
+}
+
+func appendCommandOption(options []string, currentCommand string) []string {
+	currentCommand = strings.TrimSpace(currentCommand)
+	if currentCommand == "" {
+		return options
+	}
+	for _, option := range options {
+		if option == currentCommand {
+			return options
+		}
+	}
+	return append(options, currentCommand)
+}
+
+func resolveServiceDir(project Project, servicePath string) string {
+	serviceDir := servicePath
+	if !filepath.IsAbs(serviceDir) {
+		switch serviceDir {
+		case "", ".":
+			serviceDir = project.Path
+		default:
+			serviceDir = filepath.Join(project.Path, serviceDir)
+		}
+	}
+	return serviceDir
 }
 
 func replaceFileWindows(tmpName, path string) error {
