@@ -75,17 +75,18 @@ type model struct {
 	loadingTicker    bool
 	loadingGen       int
 	loadingFrame     int
-	runtimeManager   *hangarruntime.Manager
-	logTailer        *logstream.Tailer
-	logEvents        chan tea.Msg
-	logLines         map[string][]string
-	logCancel        context.CancelFunc
-	logListenCtx     context.Context
-	logListenCancel  context.CancelFunc
-	logWatchID       int
-	followingService string
-	modal            formModal
-	errMsg           string
+	runtimeManager      *hangarruntime.Manager
+	logTailer           *logstream.Tailer
+	logEvents           chan tea.Msg
+	logLines            map[string][]string
+	logCancel           context.CancelFunc
+	logListenCtx        context.Context
+	logListenCancel     context.CancelFunc
+	logWatchID          int
+	followingService    string
+	serviceRuntimeRequest int
+	modal               formModal
+	errMsg              string
 }
 
 const loadingFrameInterval = 120 * time.Millisecond
@@ -1209,7 +1210,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, s start/stop, i interrupt, r retry, R restart, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, s start/stop, i interrupt, r retry, R restart, ? help, q quit.")
 	}
 
 	var base string

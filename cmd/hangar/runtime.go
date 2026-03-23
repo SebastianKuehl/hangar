@@ -128,6 +128,31 @@ func startServiceCmd(projectIndex int, project Project, service Service) tea.Cmd
 	}
 }
 
+func refreshServiceRuntimeCmd(requestID, projectIndex, serviceIndex int, project Project, service Service) tea.Cmd {
+	return func() tea.Msg {
+		mgr, err := newRuntimeManager()
+		if err != nil {
+			return serviceRuntimeRefreshMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, requestID: requestID, serviceKey: serviceKey(project, service), err: err}
+		}
+		svc := runtimeServiceConfig(project, service)
+		rt, err := mgr.GetRuntime(svc)
+		if err != nil {
+			if hangarruntime.IsNotExist(err) {
+				rt = hangarruntime.RuntimeForStoppedService(mgr, svc)
+			} else {
+				return serviceRuntimeRefreshMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, requestID: requestID, serviceKey: serviceKey(project, service), err: err}
+			}
+		}
+		return serviceRuntimeRefreshMsg{
+			projectIndex: projectIndex,
+			serviceIndex: serviceIndex,
+			requestID:    requestID,
+			serviceKey:   serviceKey(project, service),
+			runtime:      serviceRuntime{known: true, running: mgr.IsRunning(rt), runtime: rt},
+		}
+	}
+}
+
 func stopServiceCmd(projectIndex int, project Project, service Service, runtime serviceRuntime, ownedPID int32) tea.Cmd {
 	_ = runtime
 	_ = ownedPID

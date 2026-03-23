@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"unicode/utf8"
 
@@ -607,10 +608,16 @@ func restartEditedServiceCmd(projectIndex, serviceIndex int, oldProject Project,
 	return func() tea.Msg {
 		oldKey := serviceKey(oldProject, oldService)
 		newKey := serviceKey(newProject, newService)
-		if err := stopServiceProcesses(oldRuntime, oldOwnedPID); err != nil {
+		mgr, err := newRuntimeManager()
+		if err != nil {
 			return serviceRestartMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, oldServiceKey: oldKey, newServiceKey: newKey, err: err}
 		}
-		pid, err := startServiceProcess(newProject, newService)
-		return serviceRestartMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, oldServiceKey: oldKey, newServiceKey: newKey, startedPID: pid, err: err}
+		if oldRuntime.running {
+			if err := mgr.StopService(context.Background(), runtimeServiceConfig(oldProject, oldService)); err != nil {
+				return serviceRestartMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, oldServiceKey: oldKey, newServiceKey: newKey, err: err}
+			}
+		}
+		rt, err := mgr.StartService(context.Background(), runtimeServiceConfig(newProject, newService))
+		return serviceRestartMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, oldServiceKey: oldKey, newServiceKey: newKey, startedPID: int32(rt.PID), err: err}
 	}
 }
