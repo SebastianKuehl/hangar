@@ -65,6 +65,8 @@ When you move the cursor through the Services pane, Hangar now polls the local p
 - `○` when no matching process is running
 - `◌` while runtime detection is still refreshing
 
+During the initial runtime pre-check for the selected project, Hangar overlays the Services/Details/Logs area with a centered loading panel so the scan is obvious before those per-service indicators settle.
+
 The Details pane updates with the selected service's path, command, process status, PID, memory, and start time.
 
 The Logs pane now reflects the selected service's runtime state too. For already-running external processes, Hangar can show detection details but cannot attach to arbitrary existing stdout streams cross-platform, so the pane explains that limitation instead of faking log output.

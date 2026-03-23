@@ -140,3 +140,35 @@ func TestHelpIncludesServiceToggleHotkey(t *testing.T) {
 		t.Fatalf("expected CLI help text to describe the s hotkey, got %q", helpText)
 	}
 }
+
+func TestViewShowsRuntimeLoadingOverlay(t *testing.T) {
+	m := model{
+		width:  100,
+		height: 24,
+		cfg: Config{
+			Projects: []Project{
+				{
+					Name: "Demo",
+					Path: "/workspace/demo",
+					Services: []Service{
+						{Name: "api", Path: "apps/api", Command: "npm run start"},
+					},
+				},
+			},
+		},
+		projects: listPane{title: "Projects", visible: true},
+		services: listPane{title: "Services", visible: true},
+		details:  listPane{title: "Details", visible: true},
+		logs:     listPane{title: "Logs", visible: true},
+	}
+	m.syncSelectionState()
+	m.runtimeLoading = true
+
+	out := m.View()
+	if !strings.Contains(out, "Checking running services") {
+		t.Fatalf("expected loading overlay in view, got %q", out)
+	}
+	if !strings.Contains(out, "Projects") {
+		t.Fatalf("expected projects pane to remain visible during runtime loading, got %q", out)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -50,8 +51,21 @@ type model struct {
 	serviceStates  map[string]serviceTransition
 	serviceOwners  map[string]int32
 	runtimeRequest int
+	runtimeLoading bool
+	loadingTicker  bool
+	loadingGen     int
+	loadingFrame   int
 	modal          formModal
 	errMsg         string // transient error displayed in status bar
+}
+
+const loadingFrameInterval = 120 * time.Millisecond
+
+var loadingFrames = []string{"|", "/", "-", "\\"}
+
+type loadingTickMsg struct {
+	at  time.Time
+	gen int
 }
 
 // projectItems converts a Config's projects to display strings.
@@ -117,11 +131,16 @@ func newModel() model {
 		},
 	}
 	m.syncSelectionState()
+	m.runtimeLoading = m.shouldShowRuntimeLoading()
+	m.loadingTicker = m.runtimeLoading
+	if m.runtimeLoading {
+		m.loadingGen = 1
+	}
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh())
+	return tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh(), m.loadingTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -136,7 +155,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceRuntime = nil
 		m.syncSelectionState()
 		m.errMsg = ""
-		return m, m.startRuntimeRefresh()
+		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
 
 	case configErrMsg:
 		m.errMsg = "Error saving config: " + msg.err.Error()
@@ -147,6 +166,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ok || msg.projectIndex != m.projects.selected || msg.requestID != m.runtimeRequest || msg.projectPath != project.Path || msg.serviceCount != len(project.Services) {
 			return m, nil
 		}
+		m.stopRuntimeLoading()
 		if msg.err != nil {
 			m.errMsg = "Error detecting runtime state: " + msg.err.Error()
 			m.advanceServiceTransitionPollsOnError(project)
@@ -180,6 +200,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runtimeTickMsg:
 		return m, tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh())
+
+	case loadingTickMsg:
+		if msg.gen != m.loadingGen {
+			return m, nil
+		}
+		if !m.runtimeLoading || !m.loadingTicker {
+			m.loadingTicker = false
+			return m, nil
+		}
+		m.loadingFrame = (m.loadingFrame + 1) % len(loadingFrames)
+		return m, m.loadingTickCmd()
 
 	case tea.KeyMsg:
 		k := msg.String()
@@ -292,7 +323,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
@@ -305,7 +336,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
@@ -325,6 +356,61 @@ func (m *model) startRuntimeRefresh() tea.Cmd {
 	}
 	m.runtimeRequest++
 	return refreshProjectRuntimeCmd(m.runtimeRequest, m.projects.selected, project)
+}
+
+func (m model) loadingTickCmd() tea.Cmd {
+	if !m.runtimeLoading || !m.loadingTicker {
+		return nil
+	}
+	return tea.Tick(loadingFrameInterval, func(t time.Time) tea.Msg {
+		return loadingTickMsg{at: t, gen: m.loadingGen}
+	})
+}
+
+func (m *model) beginRuntimeLoading() tea.Cmd {
+	m.runtimeLoading = m.shouldShowRuntimeLoading()
+	if !m.runtimeLoading {
+		m.loadingTicker = false
+		m.loadingGen++
+		m.loadingFrame = 0
+		return nil
+	}
+	if m.loadingTicker {
+		return nil
+	}
+	m.loadingGen++
+	m.loadingTicker = true
+	return m.loadingTickCmd()
+}
+
+func (m *model) stopRuntimeLoading() {
+	m.runtimeLoading = false
+	m.loadingTicker = false
+	m.loadingGen++
+	m.loadingFrame = 0
+}
+
+func (m model) shouldShowRuntimeLoading() bool {
+	project, ok := m.selectedProject()
+	if !ok || len(project.Services) == 0 {
+		return false
+	}
+	if len(m.serviceRuntime) != len(project.Services) {
+		return true
+	}
+	for _, runtime := range m.serviceRuntime {
+		if !runtime.known {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) loadingIndicator() string {
+	if len(loadingFrames) == 0 {
+		return "..."
+	}
+	return loadingFrames[m.loadingFrame%len(loadingFrames)]
 }
 
 func (m *model) syncSelectionState() {
@@ -674,9 +760,15 @@ func (m model) viewMain() string {
 			col2 := m.width - col1 - gap
 			left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight, false)
 			mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
+			if m.runtimeLoading {
+				mid = m.renderRuntimeLoadingOverlay(col2, contentH)
+			}
 			out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid)
 		} else {
 			out = m.renderListPane(m.services, m.width, contentH, m.focus == paneServices, serviceHighlight, false)
+			if m.runtimeLoading {
+				out = m.renderRuntimeLoadingOverlay(m.width, contentH)
+			}
 		}
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
@@ -692,8 +784,12 @@ func (m model) viewMain() string {
 		left := m.renderListPane(m.projects, col1, contentH, m.focus == paneProjects, projectHighlight, false)
 		mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 		right := m.renderRightColumn(col3, contentH)
+		section := lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
+		if m.runtimeLoading {
+			section = m.renderRuntimeLoadingOverlay(col2+gap+col3, contentH)
+		}
 
-		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), mid, strings.Repeat(" ", gap), right)
+		out = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), section)
 		return clampToViewport(m.width, m.height, out+statusBar)
 	}
 
@@ -701,8 +797,45 @@ func (m model) viewMain() string {
 	col3 := m.width - col2 - gap
 	mid := m.renderListPane(m.services, col2, contentH, m.focus == paneServices, serviceHighlight, false)
 	right := m.renderRightColumn(col3, contentH)
-	out = lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
+	section := lipgloss.JoinHorizontal(lipgloss.Top, mid, strings.Repeat(" ", gap), right)
+	if m.runtimeLoading {
+		section = m.renderRuntimeLoadingOverlay(m.width, contentH)
+	}
+	out = section
 	return clampToViewport(m.width, m.height, out+statusBar)
+}
+
+func (m model) renderRuntimeLoadingOverlay(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+
+	mask := lipgloss.NewStyle().
+		Background(lipgloss.Color("#0d1117")).
+		Width(width).
+		Height(height).
+		Render("")
+
+	maxBoxW := min(58, width-4)
+	if maxBoxW < 24 {
+		maxBoxW = min(width, 24)
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBorderFocused).
+		Background(lipgloss.Color("#161b22")).
+		Foreground(lipgloss.Color("#c9d1d9")).
+		Padding(1, 2).
+		Width(maxBoxW).
+		Render(strings.Join([]string{
+			lipgloss.NewStyle().Bold(true).Foreground(colorTitleFocused).Render(m.loadingIndicator() + " Checking running services"),
+			"",
+			"Scanning local processes and matching them to this project's services.",
+			"Hangar will restore the pane contents as soon as detection finishes.",
+		}, "\n"))
+
+	return overlayBoxCentered(width, height, mask, box)
 }
 
 func (m model) renderRightColumn(width, height int) string {

@@ -191,6 +191,132 @@ func TestUpdateIgnoresStaleRuntimeRefresh(t *testing.T) {
 	if got.selectedServiceRuntime().running {
 		t.Fatalf("stale runtime refresh should not be applied: %#v", got.selectedServiceRuntime())
 	}
+	if got.runtimeLoading {
+		t.Fatal("stale runtime refresh should not clear or restart the active loading state")
+	}
+}
+
+func TestNewModelStartsRuntimeLoadingForUnknownServices(t *testing.T) {
+	m := model{
+		cfg: Config{
+			Projects: []Project{
+				{
+					Name: "Demo",
+					Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+					Services: []Service{
+						{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+					},
+				},
+			},
+		},
+	}
+	m.syncSelectionState()
+
+	if !m.shouldShowRuntimeLoading() {
+		t.Fatal("expected unknown runtime state to request the loading overlay")
+	}
+}
+
+func TestRuntimeRefreshClearsRuntimeLoading(t *testing.T) {
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg:            Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{}},
+		serviceOwners:  map[string]int32{},
+		runtimeLoading: true,
+		runtimeRequest: 1,
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	updated, _ := m.Update(runtimeRefreshMsg{
+		projectIndex: 0,
+		requestID:    1,
+		projectPath:  project.Path,
+		serviceCount: 1,
+		runtime: []serviceRuntime{
+			{known: true, running: false},
+		},
+	})
+	got := updated.(model)
+	if got.runtimeLoading {
+		t.Fatal("expected successful runtime refresh to clear loading overlay")
+	}
+}
+
+func TestBeginRuntimeLoadingStartsSingleTicker(t *testing.T) {
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg:            Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{}},
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	first := m.beginRuntimeLoading()
+	if first == nil {
+		t.Fatal("expected first beginRuntimeLoading call to start the ticker")
+	}
+	second := m.beginRuntimeLoading()
+	if second != nil {
+		t.Fatal("expected repeated beginRuntimeLoading call to reuse the active ticker")
+	}
+}
+
+func TestStaleLoadingTickDoesNotRestartTicker(t *testing.T) {
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg:            Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{}},
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	firstTick := m.beginRuntimeLoading()
+	if firstTick == nil {
+		t.Fatal("expected first loading ticker to start")
+	}
+	staleGen := m.loadingGen
+
+	m.stopRuntimeLoading()
+	secondTick := m.beginRuntimeLoading()
+	if secondTick == nil {
+		t.Fatal("expected loading ticker to restart after stopping")
+	}
+	currentGen := m.loadingGen
+	if currentGen == staleGen {
+		t.Fatal("expected loading generation to advance after restart")
+	}
+
+	updated, cmd := m.Update(loadingTickMsg{gen: staleGen})
+	got := updated.(model)
+	if cmd != nil {
+		t.Fatal("expected stale loading tick to be ignored")
+	}
+	if !got.loadingTicker {
+		t.Fatal("expected active ticker to remain enabled after ignoring stale tick")
+	}
+	if got.loadingGen != currentGen {
+		t.Fatalf("expected loading generation %d to remain active, got %d", currentGen, got.loadingGen)
+	}
 }
 
 func TestUpdateStartsStoppedServiceAndBlocksDuplicateToggle(t *testing.T) {
