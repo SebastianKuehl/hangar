@@ -45,7 +45,7 @@ func (f *formModal) openCreateProject() {
 		mode: modalCreateProject,
 		fields: []formField{
 			{label: "Project name", required: true},
-			{label: "Path (optional)"},
+			{label: "Project path", required: true},
 		},
 	}
 }
@@ -157,7 +157,7 @@ var (
 
 	fieldRequiredMark = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Render(" *")
 
-	modalErrStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true)
+	modalErrStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true)
 	modalHintStyle = lipgloss.NewStyle().Faint(true)
 )
 
