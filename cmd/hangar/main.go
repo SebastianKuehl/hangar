@@ -51,6 +51,8 @@ type model struct {
 	serviceStates  map[string]serviceTransition
 	serviceOwners  map[string]int32
 	runtimeRequest int
+	runtimePending bool
+	runtimePaused  bool
 	runtimeLoading bool
 	loadingTicker  bool
 	loadingGen     int
@@ -152,6 +154,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case configSavedMsg:
 		m.cfg = msg.cfg
+		m.invalidateRuntimeRefresh(false)
 		m.serviceRuntime = nil
 		m.syncSelectionState()
 		m.errMsg = ""
@@ -166,6 +169,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ok || msg.projectIndex != m.projects.selected || msg.requestID != m.runtimeRequest || msg.projectPath != project.Path || msg.serviceCount != len(project.Services) {
 			return m, nil
 		}
+		m.runtimePending = false
 		m.stopRuntimeLoading()
 		if msg.err != nil {
 			m.errMsg = "Error detecting runtime state: " + msg.err.Error()
@@ -199,6 +203,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case runtimeTickMsg:
+		if m.runtimePending || m.runtimePaused {
+			return m, nextRuntimeRefreshCmd()
+		}
 		return m, tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh())
 
 	case loadingTickMsg:
@@ -286,6 +293,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			m.wrapText = !m.wrapText
 			return m, nil
+		case "i":
+			if !m.runtimePending && !m.runtimeLoading {
+				return m, nil
+			}
+			m.invalidateRuntimeRefresh(true)
+			m.errMsg = "Interrupted service check. Press r to retry."
+			m.syncSelectionState()
+			return m, nil
+		case "r":
+			if !m.runtimePaused {
+				return m, nil
+			}
+			m.invalidateRuntimeRefresh(false)
+			m.serviceRuntime = nil
+			m.syncSelectionState()
+			m.errMsg = ""
+			return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
 		case "s":
 			project, ok := m.selectedProject()
 			if !ok {
@@ -320,6 +344,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "j", "down":
 			m.moveSelection(1)
 			if m.focus == paneProjects {
+				m.invalidateRuntimeRefresh(false)
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
@@ -327,12 +352,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
+				m.invalidateRuntimeRefresh(false)
 				return m, m.startRuntimeRefresh()
 			}
 			return m, nil
 		case "k", "up":
 			m.moveSelection(-1)
 			if m.focus == paneProjects {
+				m.invalidateRuntimeRefresh(false)
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
@@ -340,6 +367,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
+				m.invalidateRuntimeRefresh(false)
 				return m, m.startRuntimeRefresh()
 			}
 			return m, nil
@@ -351,10 +379,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) startRuntimeRefresh() tea.Cmd {
 	project, ok := m.selectedProject()
-	if !ok {
+	if !ok || m.runtimePending || m.runtimePaused {
 		return nil
 	}
 	m.runtimeRequest++
+	m.runtimePending = true
 	return refreshProjectRuntimeCmd(m.runtimeRequest, m.projects.selected, project)
 }
 
@@ -390,9 +419,16 @@ func (m *model) stopRuntimeLoading() {
 	m.loadingFrame = 0
 }
 
+func (m *model) invalidateRuntimeRefresh(pause bool) {
+	m.runtimeRequest++
+	m.runtimePending = false
+	m.runtimePaused = pause
+	m.stopRuntimeLoading()
+}
+
 func (m model) shouldShowRuntimeLoading() bool {
 	project, ok := m.selectedProject()
-	if !ok || len(project.Services) == 0 {
+	if !ok || len(project.Services) == 0 || m.runtimePaused {
 		return false
 	}
 	if len(m.serviceRuntime) != len(project.Services) {
@@ -998,6 +1034,8 @@ func (m model) renderHelpBox() string {
 			name: "Services",
 			rows: [][2]string{
 				{"s", "Start / stop the selected service"},
+				{"i", "Interrupt a running service check"},
+				{"r", "Retry an interrupted service check"},
 			},
 		},
 		{
@@ -1133,6 +1171,8 @@ TOGGLES
   a        Show / hide the Logs pane
   t        Toggle wrapped text in Details and Logs
   s        Start the selected service when stopped, or stop it when running
+  i        Interrupt the current service check
+  r        Retry an interrupted service check
   ?        Show / hide the in-app hotkey help overlay
 
 GENERAL

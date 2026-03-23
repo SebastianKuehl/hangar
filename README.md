@@ -46,6 +46,8 @@ bash install.sh   # rebuilds the binary in-place
 - `d`: toggle Details pane
 - `a`: toggle Logs pane
 - `s`: start the selected service when stopped, or stop it when running
+- `i`: interrupt the current service check
+- `r`: retry an interrupted service check
 - `h` / `l` (or ← / →): move focus between panes
 - `j` / `k` (or ↓ / ↑): move selection within the focused pane
 - `?`: show hotkey help modal
@@ -68,6 +70,8 @@ When you move the cursor through the Services pane, Hangar now polls the local p
 - `◌` while runtime detection is still refreshing
 
 During the initial runtime pre-check for the selected project, Hangar overlays the Services/Details/Logs area with a centered loading panel so the scan is obvious before those per-service indicators settle.
+
+If a runtime scan takes too long, you can press `i` to interrupt it. Hangar will ignore the in-flight result and stop auto-refreshing that project until you press `r` to retry or move to another selection.
 
 The Details pane updates with the selected service's path, command, process status, PID, memory, and start time.
 

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -248,6 +249,9 @@ func TestRuntimeRefreshClearsRuntimeLoading(t *testing.T) {
 	if got.runtimeLoading {
 		t.Fatal("expected successful runtime refresh to clear loading overlay")
 	}
+	if got.runtimePending {
+		t.Fatal("expected successful runtime refresh to clear pending flag")
+	}
 }
 
 func TestBeginRuntimeLoadingStartsSingleTicker(t *testing.T) {
@@ -316,6 +320,115 @@ func TestStaleLoadingTickDoesNotRestartTicker(t *testing.T) {
 	}
 	if got.loadingGen != currentGen {
 		t.Fatalf("expected loading generation %d to remain active, got %d", currentGen, got.loadingGen)
+	}
+}
+
+func TestRuntimeTickDoesNotStartNewRefreshWhilePending(t *testing.T) {
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg:            Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{}},
+		runtimeRequest: 7,
+		runtimePending: true,
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(runtimeTickMsg(time.Time{}))
+	got := updated.(model)
+	if got.runtimeRequest != 7 {
+		t.Fatalf("expected pending runtime request id to remain 7, got %d", got.runtimeRequest)
+	}
+	if !got.runtimePending {
+		t.Fatal("expected pending flag to remain set while waiting for refresh result")
+	}
+	if cmd == nil {
+		t.Fatal("expected periodic tick to continue while refresh is pending")
+	}
+}
+
+func TestInterruptRuntimeCheckPausesPolling(t *testing.T) {
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg:            Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{}},
+		runtimeRequest: 3,
+		runtimePending: true,
+		runtimeLoading: true,
+		loadingTicker:  true,
+		focus:          paneServices,
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got := updated.(model)
+	if !got.runtimePaused {
+		t.Fatal("expected interrupt to pause further runtime refreshes")
+	}
+	if got.runtimePending {
+		t.Fatal("expected interrupt to clear pending runtime refresh")
+	}
+	if got.runtimeLoading {
+		t.Fatal("expected interrupt to stop loading overlay")
+	}
+	if !strings.Contains(got.errMsg, "Interrupted service check") {
+		t.Fatalf("expected interrupt message, got %q", got.errMsg)
+	}
+
+	updated, cmd := got.Update(runtimeTickMsg(time.Time{}))
+	got = updated.(model)
+	if got.runtimeRequest != 4 {
+		t.Fatalf("expected interrupt to invalidate old request and keep request id at 4 during paused tick, got %d", got.runtimeRequest)
+	}
+	if cmd == nil {
+		t.Fatal("expected runtime tick loop to remain scheduled while paused")
+	}
+}
+
+func TestRetryAfterInterruptRestartsRuntimeRefresh(t *testing.T) {
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg:            Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{known: true, running: false}},
+		runtimeRequest: 2,
+		runtimePaused:  true,
+		focus:          paneServices,
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got := updated.(model)
+	if got.runtimePaused {
+		t.Fatal("expected retry to clear paused state")
+	}
+	if !got.runtimePending {
+		t.Fatal("expected retry to start a new runtime refresh")
+	}
+	if got.runtimeRequest != 4 {
+		t.Fatalf("expected retry to invalidate old request and start request 4, got %d", got.runtimeRequest)
+	}
+	if cmd == nil {
+		t.Fatal("expected retry to schedule a refresh command")
 	}
 }
 
