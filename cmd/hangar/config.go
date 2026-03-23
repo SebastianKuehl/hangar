@@ -186,6 +186,36 @@ func addService(projectIndex int, name, path, command string) (Config, error) {
 	return cfg, saveConfig(cfg)
 }
 
+// deleteProject removes the project at projectIndex and persists the config.
+func deleteProject(projectIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
+	}
+	cfg.Projects = append(cfg.Projects[:projectIndex], cfg.Projects[projectIndex+1:]...)
+	return cfg, saveConfig(cfg)
+}
+
+// deleteService removes the service at serviceIndex within the project at projectIndex and persists the config.
+func deleteService(projectIndex, serviceIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
+	}
+	services := cfg.Projects[projectIndex].Services
+	if serviceIndex < 0 || serviceIndex >= len(services) {
+		return cfg, fmt.Errorf("service index %d out of range (have %d services)", serviceIndex, len(services))
+	}
+	cfg.Projects[projectIndex].Services = append(services[:serviceIndex], services[serviceIndex+1:]...)
+	return cfg, saveConfig(cfg)
+}
+
 // updateService updates an existing service's editable fields and persists.
 func updateService(projectIndex, serviceIndex int, name, path, command string) (Config, error) {
 	cfg, err := loadConfig()

@@ -604,6 +604,143 @@ func updateServiceCmd(projectIndex, serviceIndex int, name, path, command string
 	}
 }
 
+// deleteProjectCmd returns a tea.Cmd that removes a project asynchronously.
+func deleteProjectCmd(projectIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := deleteProject(projectIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+// deleteServiceCmd returns a tea.Cmd that removes a service asynchronously.
+func deleteServiceCmd(projectIndex, serviceIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := deleteService(projectIndex, serviceIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+// ---- confirm modal ------------------------------------------------------------
+
+// confirmAction identifies what action the confirm modal is confirming.
+type confirmAction int
+
+const (
+	confirmNone confirmAction = iota
+	confirmDeleteProject
+	confirmDeleteService
+)
+
+// confirmModal is a lightweight yes/no dialog.
+// selected: 0 = No (default), 1 = Yes.
+type confirmModal struct {
+	action       confirmAction
+	message      string
+	selected     int // 0=No, 1=Yes
+	projectIndex int
+	serviceIndex int
+}
+
+func (c *confirmModal) isOpen() bool {
+	return c.action != confirmNone
+}
+
+func (c *confirmModal) open(action confirmAction, message string, projectIndex, serviceIndex int) {
+	*c = confirmModal{
+		action:       action,
+		message:      message,
+		selected:     0, // No is the default
+		projectIndex: projectIndex,
+		serviceIndex: serviceIndex,
+	}
+}
+
+func (c *confirmModal) close() {
+	c.action = confirmNone
+}
+
+// handleKey handles a key event for the confirm modal.
+// Returns (confirmed, closed).
+func (c *confirmModal) handleKey(k string) (confirmed bool, closed bool) {
+	switch k {
+	case "y", "Y":
+		return true, true
+	case "n", "N", "esc":
+		return false, true
+	case "left", "h":
+		c.selected = 0 // No
+	case "right", "l":
+		c.selected = 1 // Yes
+	case "enter":
+		return c.selected == 1, true
+	}
+	return false, false
+}
+
+var (
+	confirmBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.DoubleBorder()).
+				BorderForeground(lipgloss.Color("#f85149")).
+				Background(lipgloss.Color("#30363d")).
+				Foreground(lipgloss.Color("#c9d1d9")).
+				Padding(1, 2)
+
+	confirmBtnActiveStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(lipgloss.Color("#238636")).
+				Padding(0, 2)
+
+	confirmBtnDangerStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffffff")).
+				Background(lipgloss.Color("#da3633")).
+				Padding(0, 2)
+
+	confirmBtnInactiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#8b949e")).
+				Background(lipgloss.Color("#21262d")).
+				Padding(0, 2)
+)
+
+func (c *confirmModal) render() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f85149")).Render("⚠  Confirm Deletion")
+
+	var noBtn, yesBtn string
+	if c.selected == 0 {
+		noBtn = confirmBtnActiveStyle.Render("No")
+		yesBtn = confirmBtnInactiveStyle.Render("Yes")
+	} else {
+		noBtn = confirmBtnInactiveStyle.Render("No")
+		yesBtn = confirmBtnDangerStyle.Render("Yes")
+	}
+
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top, noBtn, "  ", yesBtn)
+	hint := modalHintStyle.Render("←/→ or h/l choose  •  y/n quick-confirm  •  enter confirm  •  esc cancel")
+
+	body := strings.Join([]string{
+		title,
+		"",
+		c.message,
+		"",
+		buttons,
+		"",
+		hint,
+	}, "\n")
+
+	box := confirmBorderStyle.Render(body)
+	for strings.HasSuffix(box, "\n") {
+		box = strings.TrimSuffix(box, "\n")
+	}
+	return box
+}
+
 func restartEditedServiceCmd(projectIndex, serviceIndex int, oldProject Project, oldService Service, oldRuntime serviceRuntime, oldOwnedPID int32, newProject Project, newService Service) tea.Cmd {
 	return func() tea.Msg {
 		oldKey := serviceKey(oldProject, oldService)

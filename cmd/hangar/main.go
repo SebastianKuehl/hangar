@@ -86,6 +86,7 @@ type model struct {
 	followingService    string
 	serviceRuntimeRequest int
 	modal               formModal
+	confirm             confirmModal
 	errMsg              string
 }
 
@@ -367,6 +368,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+		if m.confirm.isOpen() {
+			confirmed, closed := m.confirm.handleKey(k)
+			if closed {
+				action := m.confirm.action
+				projectIndex := m.confirm.projectIndex
+				serviceIndex := m.confirm.serviceIndex
+				m.confirm.close()
+				if confirmed {
+					switch action {
+					case confirmDeleteProject:
+						return m, deleteProjectCmd(projectIndex)
+					case confirmDeleteService:
+						return m, deleteServiceCmd(projectIndex, serviceIndex)
+					}
+				}
+			}
+			return m, nil
+		}
+
 		if m.modal.isOpen() {
 			submit, closeModal := m.modal.handleKey(k)
 			if closeModal {
@@ -464,6 +484,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			m.projects.visible = !m.projects.visible
 			m.ensureFocusVisible()
+			return m, nil
+		case "backspace":
+			if m.focus == paneProjects {
+				project, ok := m.selectedProject()
+				if !ok {
+					return m, nil
+				}
+				m.confirm.open(confirmDeleteProject,
+					"Delete project \""+project.Name+"\"?",
+					m.projects.selected, 0)
+			} else if m.focus == paneServices {
+				project, ok := m.selectedProject()
+				if !ok {
+					return m, nil
+				}
+				service, ok := m.selectedService()
+				if !ok {
+					return m, nil
+				}
+				m.confirm.open(confirmDeleteService,
+					"Delete service \""+service.Name+"\" from \""+project.Name+"\"?",
+					m.projects.selected, m.services.selected)
+			}
 			return m, nil
 		case "d":
 			m.details.visible = !m.details.visible
@@ -1288,6 +1331,11 @@ func (m model) View() string {
 		base = overlayBoxCentered(m.width, m.height, base, box)
 	}
 
+	if m.confirm.isOpen() {
+		box := m.confirm.render()
+		base = overlayBoxCentered(m.width, m.height, base, box)
+	}
+
 	return clampToViewport(m.width, m.height, base)
 }
 
@@ -1537,6 +1585,7 @@ func (m model) renderHelpBox() string {
 			rows: [][2]string{
 				{"c", "Create project or service (context-sensitive)"},
 				{"e", "Edit selected project or service"},
+				{"backspace", "Delete selected project or service"},
 			},
 		},
 		{
