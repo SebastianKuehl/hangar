@@ -20,9 +20,9 @@ func TestServiceItemsShowsRuntimeIcons(t *testing.T) {
 		{known: true, running: true},
 		{known: true, running: false},
 		{},
-	}, nil)
+	}, nil, 0)
 
-	want := []string{"● api", "○ web", "◌ worker"}
+	want := []string{"● api", "○ web", "| worker"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("serviceItems = %#v, want %#v", got, want)
 	}

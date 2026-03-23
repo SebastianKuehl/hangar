@@ -159,7 +159,7 @@ func TestHelpIncludesEditAndServiceToggleHotkeys(t *testing.T) {
 	}
 }
 
-func TestViewShowsRuntimeLoadingOverlay(t *testing.T) {
+func TestViewShowsSpinnerForUnknownServicesWhileLoading(t *testing.T) {
 	m := model{
 		width:  100,
 		height: 24,
@@ -183,10 +183,17 @@ func TestViewShowsRuntimeLoadingOverlay(t *testing.T) {
 	m.runtimeLoading = true
 
 	out := m.View()
-	if !strings.Contains(out, "Checking running services") {
-		t.Fatalf("expected loading overlay in view, got %q", out)
+	if strings.Contains(out, "Checking running services") {
+		t.Fatalf("expected no loading overlay, but found one in view: %q", out)
 	}
 	if !strings.Contains(out, "Projects") {
-		t.Fatalf("expected projects pane to remain visible during runtime loading, got %q", out)
+		t.Fatalf("expected projects pane to be visible during runtime loading, got %q", out)
+	}
+	if !strings.Contains(out, "Services") {
+		t.Fatalf("expected services pane to be visible during runtime loading, got %q", out)
+	}
+	// The service should show a spinner frame (first frame at loadingFrame=0 is "|")
+	if !strings.Contains(out, "| api") {
+		t.Fatalf("expected spinner icon next to service name, got %q", out)
 	}
 }
