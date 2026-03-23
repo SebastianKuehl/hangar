@@ -195,10 +195,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.watchID != m.logWatchID || msg.serviceKey != m.followingService {
 			return m, listenForLogMessage(m.logEvents, m.logListenCtx)
 		}
+		shouldAutoFollow := msg.reset || m.shouldAutoFollowLogs(msg.serviceKey)
 		if msg.reset {
 			m.logLines[msg.serviceKey] = append([]string(nil), msg.lines...)
 		} else {
 			m.logLines[msg.serviceKey] = trimLogLines(append(m.logLines[msg.serviceKey], msg.lines...))
+		}
+		if shouldAutoFollow && msg.serviceKey == m.selectedServiceKey() {
+			m.scrollLogsToBottom()
 		}
 		m.syncSelectionState()
 		return m, listenForLogMessage(m.logEvents, m.logListenCtx)
@@ -400,10 +404,12 @@ func (m *model) syncSelectionState() {
 	if lines := m.logLines[key]; len(lines) > 0 {
 		m.logs.placeholder = ""
 		m.logs.items = lines
+		m.logs.selected = clamp(m.logs.selected, 0, len(lines)-1)
 		return
 	}
 	m.logs.placeholder = ""
 	m.logs.items = serviceLogItems(project, service, runtime, transition)
+	m.logs.selected = clamp(m.logs.selected, 0, len(m.logs.items)-1)
 }
 
 func (m model) selectedProject() (Project, bool) {
@@ -512,6 +518,9 @@ func (m *model) restartLogTail() tea.Cmd {
 	m.logWatchID++
 	watchID := m.logWatchID
 	m.followingService = key
+	if key == m.selectedServiceKey() {
+		m.scrollLogsToBottom()
+	}
 	if m.logEvents == nil {
 		m.logEvents = make(chan tea.Msg, 32)
 	}
@@ -566,6 +575,29 @@ func listenForLogMessage(ch <-chan tea.Msg, ctx context.Context) tea.Cmd {
 			return msg
 		}
 	}
+}
+
+func (m *model) shouldAutoFollowLogs(serviceKey string) bool {
+	if serviceKey != m.selectedServiceKey() {
+		return false
+	}
+	if len(m.logs.items) == 0 {
+		return true
+	}
+	return m.logs.selected >= len(m.logs.items)-1
+}
+
+func (m *model) scrollLogsToBottom() {
+	key := m.selectedServiceKey()
+	if key == "" {
+		m.logs.selected = clamp(m.logs.selected, 0, len(m.logs.items)-1)
+		return
+	}
+	if lines := m.logLines[key]; len(lines) > 0 {
+		m.logs.selected = len(lines) - 1
+		return
+	}
+	m.logs.selected = clamp(m.logs.selected, 0, len(m.logs.items)-1)
 }
 
 func trimLogLines(lines []string) []string {
@@ -914,7 +946,32 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 	innerW := max(0, width-4) // border (2) + horizontal padding (2)
 	innerH := max(0, boxH-2)  // border (2)
 
+	plainLine := lipgloss.NewStyle()
+	lines, selectedStart, selectedEnd := paneRows(p, innerW, focused, highlightSel, wrap)
+
+	// lipgloss.Style.Height() sets a minimum, not a maximum. Clamp and pad the
+	// number of rendered lines so panes always fit their allocated viewport.
+	if innerH == 0 {
+		lines = nil
+	} else {
+		lines = visiblePaneRows(lines, innerH, selectedStart, selectedEnd)
+		for len(lines) < innerH {
+			lines = append(lines, renderRows(plainLine, innerW, "", false)...)
+		}
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	// Note: Pane content is intentionally placeholder data for now.
+	box := style.Render(content)
+	for strings.HasSuffix(box, "\n") {
+		box = strings.TrimSuffix(box, "\n")
+	}
+	return title + "\n" + box
+}
+
+func paneRows(p listPane, innerW int, focused bool, highlightSel bool, wrap bool) ([]string, int, int) {
 	lines := make([]string, 0, 2+len(p.items))
+	selectedStart, selectedEnd := -1, -1
 	if p.placeholder != "" {
 		lines = append(lines, renderRows(faintStyle, innerW, p.placeholder, wrap)...)
 		lines = append(lines, renderRows(lipgloss.NewStyle(), innerW, "", false)...)
@@ -931,40 +988,52 @@ func (m model) renderListPane(p listPane, width, height int, focused bool, highl
 		}
 
 		line := prefix + it
+		style := plainLine
 		if i == p.selected {
 			switch {
 			case focused:
-				lines = append(lines, renderRows(selectedFocusedStyle, innerW, line, wrap)...)
+				style = selectedFocusedStyle
 			case highlightSel:
-				lines = append(lines, renderRows(selectedContextStyle, innerW, line, wrap)...)
+				style = selectedContextStyle
 			default:
-				lines = append(lines, renderRows(selectedStyle, innerW, line, wrap)...)
+				style = selectedStyle
 			}
-			continue
 		}
-		lines = append(lines, renderRows(plainLine, innerW, line, wrap)...)
+
+		itemRows := renderRows(style, innerW, line, wrap)
+		if i == p.selected {
+			selectedStart = len(lines)
+			selectedEnd = len(lines) + len(itemRows) - 1
+		}
+		lines = append(lines, itemRows...)
+	}
+	return lines, selectedStart, selectedEnd
+}
+
+func visiblePaneRows(lines []string, height, selectedStart, selectedEnd int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if len(lines) <= height {
+		return append([]string(nil), lines...)
 	}
 
-	// lipgloss.Style.Height() sets a minimum, not a maximum. Clamp and pad the
-	// number of rendered lines so panes always fit their allocated viewport.
-	if innerH == 0 {
-		lines = nil
-	} else if len(lines) > innerH {
-		lines = lines[:innerH]
-		lines[innerH-1] = faintStyle.Width(innerW).Render("…")
-	} else {
-		for len(lines) < innerH {
-			lines = append(lines, renderRows(plainLine, innerW, "", false)...)
-		}
+	start := 0
+	if selectedEnd >= height {
+		start = selectedEnd - height + 1
+	}
+	if selectedStart >= 0 && selectedStart < start {
+		start = selectedStart
+	}
+	maxStart := len(lines) - height
+	if start > maxStart {
+		start = maxStart
+	}
+	if start < 0 {
+		start = 0
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	// Note: Pane content is intentionally placeholder data for now.
-	box := style.Render(content)
-	for strings.HasSuffix(box, "\n") {
-		box = strings.TrimSuffix(box, "\n")
-	}
-	return title + "\n" + box
+	return append([]string(nil), lines[start:start+height]...)
 }
 
 func renderRows(st lipgloss.Style, w int, s string, wrap bool) []string {

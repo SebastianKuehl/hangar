@@ -89,6 +89,9 @@ func TestUpdateAppliesLogChunksToSelectedService(t *testing.T) {
 	if !reflect.DeepEqual(got.logs.items, []string{"one", "two", "three"}) {
 		t.Fatalf("logs after append = %#v, want %#v", got.logs.items, []string{"one", "two", "three"})
 	}
+	if got.logs.selected != 2 {
+		t.Fatalf("expected logs to auto-follow the newest line, selected=%d", got.logs.selected)
+	}
 }
 
 func TestSyncSelectionStateSwitchesBetweenServiceBuffers(t *testing.T) {
@@ -117,5 +120,55 @@ func TestSyncSelectionStateSwitchesBetweenServiceBuffers(t *testing.T) {
 	m.syncSelectionState()
 	if !reflect.DeepEqual(m.logs.items, []string{"worker-1", "worker-2"}) {
 		t.Fatalf("switched logs.items = %#v, want %#v", m.logs.items, []string{"worker-1", "worker-2"})
+	}
+}
+
+func TestUpdateDoesNotAutoFollowLogsWhenUserScrolledUp(t *testing.T) {
+	project := Project{
+		Name:     "Demo",
+		Path:     filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"}},
+	}
+	key := serviceKey(project, project.Services[0])
+	m := model{
+		cfg: Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{{
+			known:   true,
+			runtime: hangarruntime.ServiceRuntime{LogPath: "/tmp/demo-api.log"},
+		}},
+		serviceStates:    map[string]serviceTransition{},
+		logLines:         map[string][]string{key: {"one", "two"}},
+		followingService: key,
+		logWatchID:       7,
+	}
+	m.syncSelectionState()
+	m.logs.selected = 0
+
+	updated, _ := m.Update(logChunkMsg{serviceKey: key, watchID: 7, lines: []string{"three"}})
+	got := updated.(model)
+	if got.logs.selected != 0 {
+		t.Fatalf("expected manual scroll position to remain when not at bottom, selected=%d", got.logs.selected)
+	}
+}
+
+func TestRenderListPaneScrollsToSelectedLogLine(t *testing.T) {
+	items := []string{
+		"log-0", "log-1", "log-2", "log-3", "log-4",
+		"log-5", "log-6", "log-7", "log-8",
+	}
+	pane := listPane{
+		title:    "Logs",
+		items:    items,
+		selected: 7,
+	}
+
+	m := newModel()
+	rendered := m.renderListPane(pane, 24, 7, true, false, false)
+
+	if !strings.Contains(rendered, "> log-7") {
+		t.Fatalf("expected rendered pane to include selected log line, got %q", rendered)
+	}
+	if strings.Contains(rendered, "log-0") {
+		t.Fatalf("expected top of log pane to scroll away from earliest rows, got %q", rendered)
 	}
 }
