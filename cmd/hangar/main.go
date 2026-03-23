@@ -666,19 +666,14 @@ func (m *model) startStopSelectedService() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	if m.focus == paneProjects {
+		return m.toggleProject(project)
+	}
 	service, ok := m.selectedService()
 	if !ok {
 		return nil
 	}
-	runtime := m.selectedServiceRuntime()
-	if !runtime.known {
-		m.errMsg = "Wait for runtime detection before toggling a service."
-		return nil
-	}
-	if runtime.running {
-		return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStopping)
-	}
-	return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
+	return m.toggleService(project, service, m.selectedServiceRuntime())
 }
 
 func (m *model) restartSelectedService() tea.Cmd {
@@ -792,6 +787,74 @@ func (m model) selectedServiceRuntime() serviceRuntime {
 		return serviceRuntime{}
 	}
 	return m.serviceRuntime[m.services.selected]
+}
+
+func (m *model) toggleProject(project Project) tea.Cmd {
+	if len(project.Services) == 0 {
+		return nil
+	}
+	if len(m.serviceRuntime) != len(project.Services) {
+		m.errMsg = "Wait for runtime detection before toggling a project."
+		return nil
+	}
+
+	shouldStop := false
+	for i, service := range project.Services {
+		if !m.serviceRuntime[i].known {
+			m.errMsg = "Wait for runtime detection before toggling a project."
+			return nil
+		}
+		if _, busy := m.serviceStates[serviceKey(project, service)]; busy {
+			m.errMsg = "Wait for pending service transitions before toggling a project."
+			return nil
+		}
+		if m.serviceRuntime[i].running {
+			shouldStop = true
+		}
+	}
+
+	cmds := make([]tea.Cmd, 0, len(project.Services))
+	for i, service := range project.Services {
+		runtime := m.serviceRuntime[i]
+		if shouldStop && !runtime.running {
+			continue
+		}
+		if !shouldStop && runtime.running {
+			continue
+		}
+
+		if shouldStop {
+			cmd := m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStopping)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			continue
+		}
+		cmd := m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *model) toggleService(project Project, service Service, runtime serviceRuntime) tea.Cmd {
+	if !runtime.known {
+		m.errMsg = "Wait for runtime detection before toggling a service."
+		return nil
+	}
+	serviceKey := serviceKey(project, service)
+	if _, busy := m.serviceStates[serviceKey]; busy {
+		return nil
+	}
+	if runtime.running {
+		return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStopping)
+	}
+	return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
 }
 
 func (m model) selectedServiceTransition() *serviceTransition {
@@ -1531,7 +1594,7 @@ func (m model) renderHelpBox() string {
 		{
 			name: "Services",
 			rows: [][2]string{
-				{"s", "Start / stop the selected service"},
+				{"s", "Start / stop the selected project or service"},
 				{"i", "Interrupt a running service check"},
 				{"r", "Retry an interrupted service check"},
 				{"R", "Restart selected service, or all services from Projects"},
