@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -496,6 +497,64 @@ func TestUpdateStartsStoppedServiceAndBlocksDuplicateToggle(t *testing.T) {
 	}
 }
 
+func TestUpdateStartsStoppedProjectFromProjectsPane(t *testing.T) {
+	previousStart := startServiceProcess
+	defer func() { startServiceProcess = previousStart }()
+
+	var started []string
+	startServiceProcess = func(project Project, service Service) (int32, error) {
+		started = append(started, service.Name)
+		return int32(len(started)), nil
+	}
+
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+			{Name: "web", Path: filepath.Join("apps", "web"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg: Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{
+			{known: true, running: false},
+			{known: true, running: false},
+		},
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{},
+		focus:         paneProjects,
+	}
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := updated.(model)
+	if cmd == nil {
+		t.Fatal("expected project start commands to be scheduled")
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg for project start, got %T", cmd())
+	}
+	for _, command := range batch {
+		msg, ok := command().(serviceControlMsg)
+		if !ok {
+			t.Fatalf("expected batched project start command to produce serviceControlMsg, got %T", command())
+		}
+		if msg.err != nil {
+			t.Fatalf("expected no project start error, got %v", msg.err)
+		}
+	}
+
+	if !slices.Equal(started, []string{"api", "web"}) {
+		t.Fatalf("expected project start to schedule every stopped service, got %#v", started)
+	}
+	if len(got.serviceStates) != 2 {
+		t.Fatalf("expected both services to be marked pending during project start, got %#v", got.serviceStates)
+	}
+}
+
 func TestUpdateAllowsOtherServicesWhileTransitionPending(t *testing.T) {
 	previousStart := startServiceProcess
 	defer func() { startServiceProcess = previousStart }()
@@ -626,6 +685,57 @@ func TestRuntimeRefreshUnlocksServiceAfterRequestedState(t *testing.T) {
 	}
 	if stopCalls != 1 {
 		t.Fatalf("expected stop command to run once, got %d", stopCalls)
+	}
+}
+
+func TestUpdateStopsRunningProjectFromProjectsPane(t *testing.T) {
+	previousStop := stopServiceProcesses
+	defer func() { stopServiceProcesses = previousStop }()
+
+	var stopped []string
+	stopServiceProcesses = func(runtime serviceRuntime, ownedPID int32) error {
+		stopped = append(stopped, runtime.process.Cmdline)
+		return nil
+	}
+
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+			{Name: "web", Path: filepath.Join("apps", "web"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg: Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{
+			{known: true, running: true, process: processSnapshot{PID: 11, Cmdline: "api"}},
+			{known: true, running: false, process: processSnapshot{PID: 22, Cmdline: "web"}},
+		},
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{},
+		focus:         paneProjects,
+	}
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := updated.(model)
+	if cmd == nil {
+		t.Fatal("expected project stop command to be scheduled")
+	}
+
+	msg, ok := cmd().(serviceControlMsg)
+	if !ok {
+		t.Fatalf("expected one stop command for the running service, got %T", cmd())
+	}
+	if msg.err != nil {
+		t.Fatalf("expected no project stop error, got %v", msg.err)
+	}
+	if !slices.Equal(stopped, []string{"api"}) {
+		t.Fatalf("expected project stop to target only running services, got %#v", stopped)
+	}
+	if len(got.serviceStates) != 1 {
+		t.Fatalf("expected only running services to be marked pending during project stop, got %#v", got.serviceStates)
 	}
 }
 

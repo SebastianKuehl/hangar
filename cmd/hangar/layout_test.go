@@ -133,7 +133,7 @@ func TestHelpIncludesServiceToggleHotkey(t *testing.T) {
 	m := newModel()
 	m.width = 100
 	help := m.renderHelpBox()
-	if !strings.Contains(help, "Start / stop the selected service") {
+	if !strings.Contains(help, "Start / stop the selected project or service") {
 		t.Fatalf("expected in-app help to describe the s hotkey, got %q", help)
 	}
 	if !strings.Contains(help, "Interrupt a running service check") {
@@ -142,7 +142,7 @@ func TestHelpIncludesServiceToggleHotkey(t *testing.T) {
 	if !strings.Contains(help, "Retry an interrupted service check") {
 		t.Fatalf("expected in-app help to describe the r hotkey, got %q", help)
 	}
-	if !strings.Contains(helpText, "s        Start the selected service when stopped, or stop it when running") {
+	if !strings.Contains(helpText, "s        Start / stop the selected project or service") {
 		t.Fatalf("expected CLI help text to describe the s hotkey, got %q", helpText)
 	}
 	if !strings.Contains(helpText, "i        Interrupt the current service check") {
