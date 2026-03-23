@@ -454,11 +454,11 @@ func processTreePIDs(rootPID int32) map[int32]struct{} {
 }
 
 func terminateProcess(pid int32) error {
-	proc, err := process.NewProcess(pid)
+	proc, err := os.FindProcess(int(pid))
 	if err != nil {
 		return err
 	}
-	return proc.Terminate()
+	return proc.Kill()
 }
 
 func intersectPIDs(pids []int32, allowed map[int32]struct{}) []int32 {
