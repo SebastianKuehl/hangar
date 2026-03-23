@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/SebastianKuehl/hangar/internal/logstream"
+	hangarruntime "github.com/SebastianKuehl/hangar/internal/runtime"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -24,12 +28,27 @@ const (
 	paneLogs
 )
 
+const maxLogLines = 4000
+
 type listPane struct {
 	title       string
 	visible     bool
 	placeholder string
 	items       []string
 	selected    int
+}
+
+type logChunkMsg struct {
+	serviceKey string
+	watchID    int
+	lines      []string
+	reset      bool
+}
+
+type logErrMsg struct {
+	serviceKey string
+	watchID    int
+	err        error
 }
 
 type model struct {
@@ -45,13 +64,21 @@ type model struct {
 	details  listPane
 	logs     listPane
 
-	cfg            Config // in-memory config; source of truth for UI
-	serviceRuntime []serviceRuntime
-	serviceStates  map[string]serviceTransition
-	serviceOwners  map[string]int32
-	runtimeRequest int
-	modal          formModal
-	errMsg         string // transient error displayed in status bar
+	cfg              Config
+	serviceRuntime   []serviceRuntime
+	serviceStates    map[string]serviceTransition
+	runtimeRequest   int
+	runtimeManager   *hangarruntime.Manager
+	logTailer        *logstream.Tailer
+	logEvents        chan tea.Msg
+	logLines         map[string][]string
+	logCancel        context.CancelFunc
+	logListenCtx     context.Context
+	logListenCancel  context.CancelFunc
+	logWatchID       int
+	followingService string
+	modal            formModal
+	errMsg           string
 }
 
 // projectItems converts a Config's projects to display strings.
@@ -70,16 +97,12 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 		icon := "◌"
 		if _, pending := states[serviceKey(project, s)]; pending {
 			icon = "◔"
-		}
-		if i < len(runtime) && runtime[i].known {
+		} else if i < len(runtime) && runtime[i].known {
 			if runtime[i].running {
 				icon = "●"
 			} else {
 				icon = "○"
 			}
-		}
-		if _, pending := states[serviceKey(project, s)]; pending {
-			icon = "◔"
 		}
 		out = append(out, icon+" "+s.Name)
 	}
@@ -87,34 +110,28 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 }
 
 func newModel() model {
-	cfg, _ := loadConfig() // ignore load error on startup; app still works with empty state
+	cfg, _ := loadConfig()
+	mgr, err := newRuntimeManager()
+
+	listenCtx, listenCancel := context.WithCancel(context.Background())
 
 	m := model{
-		cfg:           cfg,
-		focus:         paneProjects,
-		serviceStates: map[string]serviceTransition{},
-		serviceOwners: map[string]int32{},
-		projects: listPane{
-			title:       "Projects",
-			visible:     true,
-			placeholder: "",
-			items:       projectItems(cfg),
-		},
-		services: listPane{
-			title:       "Services",
-			visible:     true,
-			placeholder: "",
-		},
-		details: listPane{
-			title:       "Details",
-			visible:     true,
-			placeholder: "Select a service to inspect its runtime state.",
-		},
-		logs: listPane{
-			title:       "Logs",
-			visible:     true,
-			placeholder: "Select a service to inspect its runtime state.",
-		},
+		cfg:             cfg,
+		focus:           paneProjects,
+		serviceStates:   map[string]serviceTransition{},
+		projects:        listPane{title: "Projects", visible: true, items: projectItems(cfg)},
+		services:        listPane{title: "Services", visible: true},
+		details:         listPane{title: "Details", visible: true, placeholder: "Select a service to inspect its runtime state."},
+		logs:            listPane{title: "Logs", visible: true, placeholder: "Select a service to inspect its runtime state."},
+		runtimeManager:  mgr,
+		logTailer:       logstream.NewTailer(250 * time.Millisecond),
+		logEvents:       make(chan tea.Msg, 32),
+		logLines:        map[string][]string{},
+		logListenCtx:    listenCtx,
+		logListenCancel: listenCancel,
+	}
+	if err != nil {
+		m.errMsg = "Error initializing hangar runtime: " + err.Error()
 	}
 	m.syncSelectionState()
 	return m
@@ -136,7 +153,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceRuntime = nil
 		m.syncSelectionState()
 		m.errMsg = ""
-		return m, m.startRuntimeRefresh()
+		return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 
 	case configErrMsg:
 		m.errMsg = "Error saving config: " + msg.err.Error()
@@ -156,9 +173,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceRuntime = msg.runtime
 		m.errMsg = ""
 		m.reconcileServiceTransitions(project, msg.runtime)
-		m.pruneServiceOwners(project, msg.runtime)
 		m.syncSelectionState()
-		return m, nil
+		return m, m.ensureLogTail()
 
 	case serviceControlMsg:
 		if msg.err != nil {
@@ -167,29 +183,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncSelectionState()
 			return m, nil
 		}
-		if msg.startedPID != 0 {
-			if m.serviceOwners == nil {
-				m.serviceOwners = map[string]int32{}
-			}
-			m.serviceOwners[msg.serviceKey] = msg.startedPID
-		}
 		if msg.projectIndex == m.projects.selected {
-			return m, m.startRuntimeRefresh()
+			return m, tea.Batch(m.startRuntimeRefresh(), m.ensureLogTail())
 		}
 		return m, nil
 
 	case runtimeTickMsg:
 		return m, tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh())
 
+	case logChunkMsg:
+		if msg.watchID != m.logWatchID || msg.serviceKey != m.followingService {
+			return m, listenForLogMessage(m.logEvents, m.logListenCtx)
+		}
+		if msg.reset {
+			m.logLines[msg.serviceKey] = append([]string(nil), msg.lines...)
+		} else {
+			m.logLines[msg.serviceKey] = trimLogLines(append(m.logLines[msg.serviceKey], msg.lines...))
+		}
+		m.syncSelectionState()
+		return m, listenForLogMessage(m.logEvents, m.logListenCtx)
+
+	case logErrMsg:
+		if msg.watchID == m.logWatchID && msg.serviceKey == m.followingService {
+			m.errMsg = "Error tailing logs: " + msg.err.Error()
+		}
+		return m, listenForLogMessage(m.logEvents, m.logListenCtx)
+
 	case tea.KeyMsg:
 		k := msg.String()
-
-		// ctrl+c always quits, even when a modal is open.
 		if k == "ctrl+c" {
+			if m.logCancel != nil {
+				m.logCancel()
+			}
 			return m, tea.Quit
 		}
 
-		// Modal intercepts all remaining keys while open.
 		if m.modal.isOpen() {
 			submit, closeModal := m.modal.handleKey(k)
 			if closeModal {
@@ -215,6 +243,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showHelp = false
 				return m, nil
 			case "q":
+				if m.logCancel != nil {
+					m.logCancel()
+				}
 				return m, tea.Quit
 			default:
 				return m, nil
@@ -223,6 +254,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch k {
 		case "q":
+			if m.logCancel != nil {
+				m.logCancel()
+			}
 			return m, tea.Quit
 		case "?":
 			m.showHelp = true
@@ -231,7 +265,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == paneProjects {
 				m.modal.openCreateProject()
 			} else if m.focus == paneServices {
-				// A service must belong to a project.
 				if len(m.cfg.Projects) == 0 {
 					m.errMsg = "Create a project first before adding services."
 				} else {
@@ -269,15 +302,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = "Wait for runtime detection before toggling a service."
 				return m, nil
 			}
-			serviceKey := serviceKey(project, service)
-			if _, busy := m.serviceStates[serviceKey]; busy {
+			key := serviceKey(project, service)
+			if _, busy := m.serviceStates[key]; busy {
 				return m, nil
 			}
-			m.serviceStates[serviceKey] = serviceTransition{targetRunning: !runtime.running}
+			m.serviceStates[key] = serviceTransition{targetRunning: !runtime.running}
 			m.errMsg = ""
 			m.syncSelectionState()
 			if runtime.running {
-				return m, stopServiceCmd(m.projects.selected, project, service, runtime, m.serviceOwners[serviceKey])
+				return m, stopServiceCmd(m.projects.selected, project, service)
 			}
 			return m, startServiceCmd(m.projects.selected, project, service)
 		case "h", "left":
@@ -292,11 +325,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			return m, nil
 		case "k", "up":
@@ -305,11 +338,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.services.selected = 0
 				m.serviceRuntime = nil
 				m.syncSelectionState()
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			m.syncSelectionState()
 			if m.focus == paneServices {
-				return m, m.startRuntimeRefresh()
+				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			return m, nil
 		}
@@ -362,6 +395,13 @@ func (m *model) syncSelectionState() {
 	transition := m.selectedServiceTransition()
 	m.details.placeholder = ""
 	m.details.items = serviceDetailsItems(project, service, runtime, transition)
+
+	key := serviceKey(project, service)
+	if lines := m.logLines[key]; len(lines) > 0 {
+		m.logs.placeholder = ""
+		m.logs.items = lines
+		return
+	}
 	m.logs.placeholder = ""
 	m.logs.items = serviceLogItems(project, service, runtime, transition)
 }
@@ -404,6 +444,137 @@ func (m model) selectedServiceTransition() *serviceTransition {
 	return &transition
 }
 
+func (m model) selectedServiceKey() string {
+	project, ok := m.selectedProject()
+	if !ok {
+		return ""
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return ""
+	}
+	return serviceKey(project, service)
+}
+
+func (m *model) selectedLogPath() (string, string, bool) {
+	project, ok := m.selectedProject()
+	if !ok || m.runtimeManager == nil {
+		return "", "", false
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return "", "", false
+	}
+	key := serviceKey(project, service)
+	if m.services.selected >= 0 && m.services.selected < len(m.serviceRuntime) {
+		if path := m.serviceRuntime[m.services.selected].runtime.LogPath; path != "" {
+			return key, path, true
+		}
+	}
+	return key, m.runtimeManager.LogPath(runtimeServiceConfig(project, service)), true
+}
+
+func (m *model) ensureLogTail() tea.Cmd {
+	key, _, ok := m.selectedLogPath()
+	if !ok {
+		if m.logCancel != nil {
+			m.logCancel()
+			m.logCancel = nil
+		}
+		m.followingService = ""
+		return nil
+	}
+	if key == m.followingService && m.logCancel != nil {
+		return nil
+	}
+	return m.restartLogTail()
+}
+
+func (m *model) restartLogTail() tea.Cmd {
+	if m.logCancel != nil {
+		m.logCancel()
+		m.logCancel = nil
+	}
+	if m.logListenCancel != nil {
+		m.logListenCancel()
+	}
+	listenCtx, listenCancel := context.WithCancel(context.Background())
+	m.logListenCtx = listenCtx
+	m.logListenCancel = listenCancel
+	key, logPath, ok := m.selectedLogPath()
+	if !ok || m.logTailer == nil {
+		m.followingService = ""
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.logCancel = cancel
+	m.logWatchID++
+	watchID := m.logWatchID
+	m.followingService = key
+	if m.logEvents == nil {
+		m.logEvents = make(chan tea.Msg, 32)
+	}
+	outbox := m.logEvents
+	tailer := m.logTailer
+
+	go func() {
+		events := make(chan logstream.LogEvent, 8)
+		go func() {
+			defer close(events)
+			_ = tailer.TailFile(ctx, logPath, true, 200, events)
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				var msg tea.Msg
+				if event.Err != nil {
+					msg = logErrMsg{serviceKey: key, watchID: watchID, err: event.Err}
+				} else {
+					msg = logChunkMsg{serviceKey: key, watchID: watchID, lines: event.Lines, reset: event.Reset}
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case outbox <- msg:
+				}
+			}
+		}
+	}()
+
+	return listenForLogMessage(m.logEvents, m.logListenCtx)
+}
+
+func listenForLogMessage(ch <-chan tea.Msg, ctx context.Context) tea.Cmd {
+	if ch == nil || ctx == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return msg
+		}
+	}
+}
+
+func trimLogLines(lines []string) []string {
+	if len(lines) <= maxLogLines {
+		return lines
+	}
+	return append([]string(nil), lines[len(lines)-maxLogLines:]...)
+}
+
 func (m *model) reconcileServiceTransitions(project Project, runtime []serviceRuntime) {
 	for i, service := range project.Services {
 		key := serviceKey(project, service)
@@ -413,35 +584,15 @@ func (m *model) reconcileServiceTransitions(project Project, runtime []serviceRu
 		}
 		if i < len(runtime) && runtime[i].known && runtime[i].running == transition.targetRunning {
 			delete(m.serviceStates, key)
-			if !transition.targetRunning {
-				delete(m.serviceOwners, key)
-			}
 			continue
 		}
 		transition.polls++
 		if transition.polls >= maxServiceTransitionPolls {
 			delete(m.serviceStates, key)
-			delete(m.serviceOwners, key)
 			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press s to try again.", transition.label(), service.Name)
 			continue
 		}
 		m.serviceStates[key] = transition
-	}
-}
-
-func (m *model) pruneServiceOwners(project Project, runtime []serviceRuntime) {
-	for i, service := range project.Services {
-		key := serviceKey(project, service)
-		if _, pending := m.serviceStates[key]; pending {
-			continue
-		}
-		ownedPID := m.serviceOwners[key]
-		if ownedPID == 0 {
-			continue
-		}
-		if i >= len(runtime) || !runtimeContainsPID(runtime[i], ownedPID) {
-			delete(m.serviceOwners, key)
-		}
 	}
 }
 
@@ -455,7 +606,6 @@ func (m *model) advanceServiceTransitionPollsOnError(project Project) {
 		transition.polls++
 		if transition.polls >= maxServiceTransitionPolls {
 			delete(m.serviceStates, key)
-			delete(m.serviceOwners, key)
 			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press s to try again.", transition.label(), service.Name)
 			continue
 		}

@@ -59,14 +59,19 @@ When a project is saved, Hangar scans that folder for Node and Bun services by l
 
 ## Service runtime panes
 
-When you move the cursor through the Services pane, Hangar now polls the local process list and tries to match each service to a running Node/Bun process by service directory and runtime. The Services pane shows:
+Hangar now manages service runtime state through durable files under `~/hangar`:
+
+- `~/hangar/logs/` stores combined stdout/stderr logs per managed service
+- `~/hangar/run/` stores runtime metadata (PID, command, log path, timestamps)
+
+When you move the cursor through the Services pane, Hangar refreshes persisted runtime metadata and verifies whether the recorded PID is still alive. The Services pane shows:
 
 - `●` when Hangar found a matching running process
 - `○` when no matching process is running
 - `◌` while runtime detection is still refreshing
 
-The Details pane updates with the selected service's path, command, process status, PID, memory, and start time.
+The Details pane updates with the selected service's path, command, status, PID, working directory, and log file path.
 
-The Logs pane now reflects the selected service's runtime state too. For already-running external processes, Hangar can show detection details but cannot attach to arbitrary existing stdout streams cross-platform, so the pane explains that limitation instead of faking log output.
+The Logs pane follows the selected service's log file instead of attaching directly to process pipes. That means you can switch between services without interrupting them, quit the TUI, reopen `hangar`, and immediately reattach to the same recent log backlog and ongoing output.
 
-When you press `s`, Hangar starts a stopped service or force-stops the confident running targets for that service. The selected service stays locked until runtime polling confirms the requested state, but you can still move around the UI and trigger `s` for other services while that happens.
+When you press `s`, Hangar starts a stopped service as a detached child process, appends lifecycle markers to its log, and persists runtime metadata. Stopping a service signals its managed process group and keeps the historical log file available after exit.
