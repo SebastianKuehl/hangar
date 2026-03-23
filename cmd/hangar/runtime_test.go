@@ -467,6 +467,48 @@ func TestRunServiceStopAllowsOwnedProcessTrees(t *testing.T) {
 	}
 }
 
+func TestRunServiceStopAllowsSingleExternalMatchedTree(t *testing.T) {
+	previousParent := parentPIDForProcess
+	previousTerminate := terminateProcessByPID
+	defer func() {
+		parentPIDForProcess = previousParent
+		terminateProcessByPID = previousTerminate
+	}()
+
+	parentPIDForProcess = func(pid int32) (int32, error) {
+		switch pid {
+		case 42:
+			return 1, nil
+		case 43:
+			return 42, nil
+		case 44:
+			return 42, nil
+		default:
+			return 0, errors.New("unknown pid")
+		}
+	}
+
+	terminated := []int32{}
+	terminateProcessByPID = func(pid int32) error {
+		terminated = append(terminated, pid)
+		return nil
+	}
+
+	err := runServiceStop(serviceRuntime{
+		processes: []processSnapshot{
+			{PID: 42},
+			{PID: 43},
+			{PID: 44},
+		},
+	}, 0)
+	if err != nil {
+		t.Fatalf("expected single external process tree to stop cleanly, got %v", err)
+	}
+	if !reflect.DeepEqual(terminated, []int32{42, 43, 44}) {
+		t.Fatalf("expected to terminate entire matched tree, got %#v", terminated)
+	}
+}
+
 func TestRunServiceStopRejectsStaleOwnedPIDForMultipleMatches(t *testing.T) {
 	previousTree := ownedProcessTreePIDs
 	defer func() { ownedProcessTreePIDs = previousTree }()
@@ -483,6 +525,32 @@ func TestRunServiceStopRejectsStaleOwnedPIDForMultipleMatches(t *testing.T) {
 	}, 99)
 	if err == nil {
 		t.Fatal("expected stale owned pid with multiple matches to fail safely")
+	}
+}
+
+func TestRunServiceStopRejectsMultipleExternalRoots(t *testing.T) {
+	previousParent := parentPIDForProcess
+	defer func() { parentPIDForProcess = previousParent }()
+
+	parentPIDForProcess = func(pid int32) (int32, error) {
+		switch pid {
+		case 42:
+			return 1, nil
+		case 43:
+			return 2, nil
+		default:
+			return 0, errors.New("unknown pid")
+		}
+	}
+
+	err := runServiceStop(serviceRuntime{
+		processes: []processSnapshot{
+			{PID: 42},
+			{PID: 43},
+		},
+	}, 0)
+	if err == nil {
+		t.Fatal("expected multiple external roots to remain protected")
 	}
 }
 

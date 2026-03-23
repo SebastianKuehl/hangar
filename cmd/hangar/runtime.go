@@ -73,6 +73,7 @@ var startServiceProcess = runServiceStart
 var stopServiceProcesses = runServiceStop
 var ownedProcessTreePIDs = processTreePIDs
 var terminateProcessByPID = terminateProcess
+var parentPIDForProcess = parentPID
 
 func nextRuntimeRefreshCmd() tea.Cmd {
 	return tea.Tick(runtimeRefreshInterval, func(t time.Time) tea.Msg {
@@ -409,7 +410,9 @@ func runServiceStop(runtime serviceRuntime, ownedPID int32) error {
 		}
 	}
 	if ownedPID == 0 && len(targetPIDs) > 1 {
-		return fmt.Errorf("refusing to stop service: matched %d processes and none were started by Hangar", len(targetPIDs))
+		if !isSingleMatchedTree(targetPIDs) {
+			return fmt.Errorf("refusing to stop service: matched %d processes and none were started by Hangar", len(targetPIDs))
+		}
 	}
 
 	errs := make([]error, 0)
@@ -461,6 +464,14 @@ func terminateProcess(pid int32) error {
 	return proc.Kill()
 }
 
+func parentPID(pid int32) (int32, error) {
+	proc, err := process.NewProcess(pid)
+	if err != nil {
+		return 0, err
+	}
+	return proc.Ppid()
+}
+
 func intersectPIDs(pids []int32, allowed map[int32]struct{}) []int32 {
 	out := make([]int32, 0, len(pids))
 	for _, pid := range pids {
@@ -469,6 +480,39 @@ func intersectPIDs(pids []int32, allowed map[int32]struct{}) []int32 {
 		}
 	}
 	return out
+}
+
+func isSingleMatchedTree(pids []int32) bool {
+	if len(pids) <= 1 {
+		return true
+	}
+
+	pidSet := map[int32]struct{}{}
+	for _, pid := range pids {
+		pidSet[pid] = struct{}{}
+	}
+
+	roots := map[int32]struct{}{}
+	for _, pid := range pids {
+		root := pid
+		current := pid
+		for {
+			parentPID, err := parentPIDForProcess(current)
+			if err != nil {
+				break
+			}
+			if _, ok := pidSet[parentPID]; !ok {
+				break
+			}
+			root = parentPID
+			current = parentPID
+		}
+		roots[root] = struct{}{}
+		if len(roots) > 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimeContainsPID(runtime serviceRuntime, pid int32) bool {
