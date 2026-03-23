@@ -5,6 +5,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/hangar"
 
+# Check for Go
+if ! command -v go &>/dev/null; then
+    echo "❌ Error: 'go' is not installed or not in PATH." >&2
+    echo "Install Go from https://go.dev/dl/ and re-run this script." >&2
+    exit 1
+fi
+
 # Build
 echo "Building hangar..."
 mkdir -p "$INSTALL_DIR"
