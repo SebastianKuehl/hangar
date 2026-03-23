@@ -1486,15 +1486,7 @@ func paneRows(p listPane, innerW int, focused bool, highlightSel bool, wrap bool
 
 	plainLine := lipgloss.NewStyle()
 	for i, it := range p.items {
-		prefix := "  "
-		if i == p.selected {
-			prefix = "• "
-			if focused || highlightSel {
-				prefix = "> "
-			}
-		}
-
-		line := prefix + it
+		line := it
 		style := plainLine
 		if i == p.selected {
 			switch {
