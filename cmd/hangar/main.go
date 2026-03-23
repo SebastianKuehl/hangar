@@ -1733,7 +1733,7 @@ TOGGLES
   a        Show / hide the Logs pane
   t        Toggle wrapped text in Details and Logs
   e        Edit the selected project or service
-  s        Start the selected service when stopped, or stop it when running
+  s        Start / stop the selected project or service
   i        Interrupt the current service check
   r        Retry an interrupted service check
   R        Restart the selected service, or restart all services from Projects
