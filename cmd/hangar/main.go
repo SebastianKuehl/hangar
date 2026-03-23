@@ -121,7 +121,7 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 				icon = "○"
 			}
 		}
-		out = append(out, icon+" "+s.Name)
+		out = append(out, " "+icon+" "+s.Name)
 	}
 	return out
 }
