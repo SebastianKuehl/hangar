@@ -811,7 +811,6 @@ func (m model) renderRuntimeLoadingOverlay(width, height int) string {
 	}
 
 	mask := lipgloss.NewStyle().
-		Background(lipgloss.Color("#0d1117")).
 		Width(width).
 		Height(height).
 		Render("")
@@ -824,8 +823,6 @@ func (m model) renderRuntimeLoadingOverlay(width, height int) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorBorderFocused).
-		Background(lipgloss.Color("#161b22")).
-		Foreground(lipgloss.Color("#c9d1d9")).
 		Padding(1, 2).
 		Width(maxBoxW).
 		Render(strings.Join([]string{
