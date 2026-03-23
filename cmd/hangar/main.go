@@ -47,6 +47,8 @@ type model struct {
 
 	cfg            Config // in-memory config; source of truth for UI
 	serviceRuntime []serviceRuntime
+	serviceStates  map[string]serviceTransition
+	serviceOwners  map[string]int32
 	runtimeRequest int
 	modal          formModal
 	errMsg         string // transient error displayed in status bar
@@ -62,16 +64,22 @@ func projectItems(cfg Config) []string {
 }
 
 // serviceItems returns the service names for a project with runtime icons.
-func serviceItems(project Project, runtime []serviceRuntime) []string {
+func serviceItems(project Project, runtime []serviceRuntime, states map[string]serviceTransition) []string {
 	out := make([]string, 0, len(project.Services))
 	for i, s := range project.Services {
 		icon := "◌"
+		if _, pending := states[serviceKey(project, s)]; pending {
+			icon = "◔"
+		}
 		if i < len(runtime) && runtime[i].known {
 			if runtime[i].running {
 				icon = "●"
 			} else {
 				icon = "○"
 			}
+		}
+		if _, pending := states[serviceKey(project, s)]; pending {
+			icon = "◔"
 		}
 		out = append(out, icon+" "+s.Name)
 	}
@@ -82,8 +90,10 @@ func newModel() model {
 	cfg, _ := loadConfig() // ignore load error on startup; app still works with empty state
 
 	m := model{
-		cfg:   cfg,
-		focus: paneProjects,
+		cfg:           cfg,
+		focus:         paneProjects,
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{},
 		projects: listPane{
 			title:       "Projects",
 			visible:     true,
@@ -139,11 +149,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.errMsg = "Error detecting runtime state: " + msg.err.Error()
+			m.advanceServiceTransitionPollsOnError(project)
+			m.syncSelectionState()
 			return m, nil
 		}
 		m.serviceRuntime = msg.runtime
 		m.errMsg = ""
+		m.reconcileServiceTransitions(project, msg.runtime)
+		m.pruneServiceOwners(project, msg.runtime)
 		m.syncSelectionState()
+		return m, nil
+
+	case serviceControlMsg:
+		if msg.err != nil {
+			delete(m.serviceStates, msg.serviceKey)
+			m.errMsg = msg.err.Error()
+			m.syncSelectionState()
+			return m, nil
+		}
+		if msg.startedPID != 0 {
+			if m.serviceOwners == nil {
+				m.serviceOwners = map[string]int32{}
+			}
+			m.serviceOwners[msg.serviceKey] = msg.startedPID
+		}
+		if msg.projectIndex == m.projects.selected {
+			return m, m.startRuntimeRefresh()
+		}
 		return m, nil
 
 	case runtimeTickMsg:
@@ -223,6 +255,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			m.wrapText = !m.wrapText
 			return m, nil
+		case "s":
+			project, ok := m.selectedProject()
+			if !ok {
+				return m, nil
+			}
+			service, ok := m.selectedService()
+			if !ok {
+				return m, nil
+			}
+			runtime := m.selectedServiceRuntime()
+			if !runtime.known {
+				m.errMsg = "Wait for runtime detection before toggling a service."
+				return m, nil
+			}
+			serviceKey := serviceKey(project, service)
+			if _, busy := m.serviceStates[serviceKey]; busy {
+				return m, nil
+			}
+			m.serviceStates[serviceKey] = serviceTransition{targetRunning: !runtime.running}
+			m.errMsg = ""
+			m.syncSelectionState()
+			if runtime.running {
+				return m, stopServiceCmd(m.projects.selected, project, service, runtime, m.serviceOwners[serviceKey])
+			}
+			return m, startServiceCmd(m.projects.selected, project, service)
 		case "h", "left":
 			m.focusPrev()
 			return m, nil
@@ -289,7 +346,7 @@ func (m *model) syncSelectionState() {
 	if len(m.serviceRuntime) != len(project.Services) {
 		m.serviceRuntime = make([]serviceRuntime, len(project.Services))
 	}
-	m.services.items = serviceItems(project, m.serviceRuntime)
+	m.services.items = serviceItems(project, m.serviceRuntime, m.serviceStates)
 	m.services.selected = clamp(m.services.selected, 0, len(project.Services)-1)
 
 	service, ok := m.selectedService()
@@ -302,10 +359,11 @@ func (m *model) syncSelectionState() {
 	}
 
 	runtime := m.selectedServiceRuntime()
+	transition := m.selectedServiceTransition()
 	m.details.placeholder = ""
-	m.details.items = serviceDetailsItems(project, service, runtime)
+	m.details.items = serviceDetailsItems(project, service, runtime, transition)
 	m.logs.placeholder = ""
-	m.logs.items = serviceLogItems(project, service, runtime)
+	m.logs.items = serviceLogItems(project, service, runtime, transition)
 }
 
 func (m model) selectedProject() (Project, bool) {
@@ -328,6 +386,81 @@ func (m model) selectedServiceRuntime() serviceRuntime {
 		return serviceRuntime{}
 	}
 	return m.serviceRuntime[m.services.selected]
+}
+
+func (m model) selectedServiceTransition() *serviceTransition {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return nil
+	}
+	transition, ok := m.serviceStates[serviceKey(project, service)]
+	if !ok {
+		return nil
+	}
+	return &transition
+}
+
+func (m *model) reconcileServiceTransitions(project Project, runtime []serviceRuntime) {
+	for i, service := range project.Services {
+		key := serviceKey(project, service)
+		transition, ok := m.serviceStates[key]
+		if !ok {
+			continue
+		}
+		if i < len(runtime) && runtime[i].known && runtime[i].running == transition.targetRunning {
+			delete(m.serviceStates, key)
+			if !transition.targetRunning {
+				delete(m.serviceOwners, key)
+			}
+			continue
+		}
+		transition.polls++
+		if transition.polls >= maxServiceTransitionPolls {
+			delete(m.serviceStates, key)
+			delete(m.serviceOwners, key)
+			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press s to try again.", transition.label(), service.Name)
+			continue
+		}
+		m.serviceStates[key] = transition
+	}
+}
+
+func (m *model) pruneServiceOwners(project Project, runtime []serviceRuntime) {
+	for i, service := range project.Services {
+		key := serviceKey(project, service)
+		if _, pending := m.serviceStates[key]; pending {
+			continue
+		}
+		ownedPID := m.serviceOwners[key]
+		if ownedPID == 0 {
+			continue
+		}
+		if i >= len(runtime) || !runtimeContainsPID(runtime[i], ownedPID) {
+			delete(m.serviceOwners, key)
+		}
+	}
+}
+
+func (m *model) advanceServiceTransitionPollsOnError(project Project) {
+	for _, service := range project.Services {
+		key := serviceKey(project, service)
+		transition, ok := m.serviceStates[key]
+		if !ok {
+			continue
+		}
+		transition.polls++
+		if transition.polls >= maxServiceTransitionPolls {
+			delete(m.serviceStates, key)
+			delete(m.serviceOwners, key)
+			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press s to try again.", transition.label(), service.Name)
+			continue
+		}
+		m.serviceStates[key] = transition
+	}
 }
 
 func (m *model) focusOrder() []paneID {
@@ -494,7 +627,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, s start/stop, ? help, q quit.")
 	}
 
 	var base string
@@ -732,6 +865,12 @@ func (m model) renderHelpBox() string {
 			},
 		},
 		{
+			name: "Services",
+			rows: [][2]string{
+				{"s", "Start / stop the selected service"},
+			},
+		},
+		{
 			name: "Navigation",
 			rows: [][2]string{
 				{"h/l (←/→)", "Move focus between panes"},
@@ -863,6 +1002,7 @@ TOGGLES
   d        Show / hide the Details pane
   a        Show / hide the Logs pane
   t        Toggle wrapped text in Details and Logs
+  s        Start the selected service when stopped, or stop it when running
   ?        Show / hide the in-app hotkey help overlay
 
 GENERAL

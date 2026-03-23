@@ -1,8 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +33,28 @@ type serviceRuntime struct {
 	running   bool
 	instances int
 	process   processSnapshot
+	processes []processSnapshot
+}
+
+type serviceTransition struct {
+	targetRunning bool
+	polls         int
+}
+
+const maxServiceTransitionPolls = 5
+
+func (s serviceTransition) label() string {
+	if s.targetRunning {
+		return "starting"
+	}
+	return "stopping"
+}
+
+type serviceControlMsg struct {
+	projectIndex int
+	serviceKey   string
+	startedPID   int32
+	err          error
 }
 
 type runtimeRefreshMsg struct {
@@ -42,6 +69,10 @@ type runtimeRefreshMsg struct {
 type runtimeTickMsg time.Time
 
 var listProcessSnapshots = loadProcessSnapshots
+var startServiceProcess = runServiceStart
+var stopServiceProcesses = runServiceStop
+var ownedProcessTreePIDs = processTreePIDs
+var terminateProcessByPID = terminateProcess
 
 func nextRuntimeRefreshCmd() tea.Cmd {
 	return tea.Tick(runtimeRefreshInterval, func(t time.Time) tea.Msg {
@@ -100,6 +131,7 @@ func matchProjectRuntime(project Project, snapshots []processSnapshot) []service
 				continue
 			}
 			best.running = true
+			best.processes = append(best.processes, snapshot)
 			best.instances++
 			if shouldPreferProcess(snapshot, best.process) {
 				best.process = snapshot
@@ -159,12 +191,30 @@ func canonicalRuntimePath(path string) string {
 	return filepath.Clean(path)
 }
 
-func serviceDetailsItems(project Project, service Service, runtime serviceRuntime) []string {
+func serviceDetailsItems(project Project, service Service, runtime serviceRuntime, transition *serviceTransition) []string {
 	items := []string{
 		"Project: " + project.Name,
 		"Service: " + service.Name,
 		"Path: " + servicePath(project, service),
 		"Command: " + service.Command,
+	}
+	if transition != nil {
+		items = append(items,
+			"Status: "+transition.label(),
+			fmt.Sprintf("Instances: %d", runtime.instances),
+			"Hangar is waiting for runtime confirmation before allowing another start/stop toggle.",
+		)
+		if runtime.running {
+			items = append(items,
+				fmt.Sprintf("PID: %d", runtime.process.PID),
+				"Process cwd: "+fallbackValue(runtime.process.Cwd, "unavailable"),
+				"Executable: "+fallbackValue(runtime.process.Exe, "unavailable"),
+				"Proc status: "+fallbackValue(runtime.process.Status, "unavailable"),
+				"Memory RSS: "+formatBytes(runtime.process.RSS),
+				"Started: "+formatProcessStart(runtime.process.CreatedAt),
+			)
+		}
+		return items
 	}
 	if !runtime.known || !runtime.running {
 		return append(items,
@@ -186,7 +236,21 @@ func serviceDetailsItems(project Project, service Service, runtime serviceRuntim
 	return items
 }
 
-func serviceLogItems(project Project, service Service, runtime serviceRuntime) []string {
+func serviceLogItems(project Project, service Service, runtime serviceRuntime, transition *serviceTransition) []string {
+	if transition != nil {
+		lines := []string{
+			fmt.Sprintf("◔ Hangar is %s %s.", transition.label(), service.Name),
+			"Expected path: " + servicePath(project, service),
+			"Expected command: " + fallbackValue(service.Command, "unavailable"),
+		}
+		if runtime.running {
+			lines = append(lines,
+				fmt.Sprintf("Current PID: %d", runtime.process.PID),
+				"Hangar will unlock the service once runtime polling confirms the requested state.",
+			)
+		}
+		return lines
+	}
 	if !runtime.known || !runtime.running {
 		return []string{
 			"○ Service is not running.",
@@ -234,4 +298,187 @@ func formatProcessStart(createdAt int64) string {
 		return "unavailable"
 	}
 	return time.UnixMilli(createdAt).Format(time.RFC3339)
+}
+
+func startServiceCmd(projectIndex int, project Project, service Service) tea.Cmd {
+	return func() tea.Msg {
+		pid, err := startServiceProcess(project, service)
+		return serviceControlMsg{
+			projectIndex: projectIndex,
+			serviceKey:   serviceKey(project, service),
+			startedPID:   pid,
+			err:          err,
+		}
+	}
+}
+
+func stopServiceCmd(projectIndex int, project Project, service Service, runtime serviceRuntime, ownedPID int32) tea.Cmd {
+	return func() tea.Msg {
+		return serviceControlMsg{
+			projectIndex: projectIndex,
+			serviceKey:   serviceKey(project, service),
+			err:          stopServiceProcesses(runtime, ownedPID),
+		}
+	}
+}
+
+func serviceKey(project Project, service Service) string {
+	return strings.Join([]string{project.Path, service.Path, service.Name}, "\x00")
+}
+
+func runServiceStart(project Project, service Service) (int32, error) {
+	if strings.TrimSpace(service.Command) == "" {
+		return 0, fmt.Errorf("service %q has no configured start command", service.Name)
+	}
+
+	dir := servicePath(project, service)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("service path %q is not a directory", dir)
+	}
+
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer devNull.Close()
+
+	cmd := startShellCommand(service.Command)
+	cmd.Dir = dir
+	cmd.Stdin = devNull
+	cmd.Stdout = devNull
+	cmd.Stderr = devNull
+
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	if err := cmd.Process.Release(); err != nil {
+		return 0, err
+	}
+	return int32(cmd.Process.Pid), nil
+}
+
+func startShellCommand(command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/C", command)
+	}
+	return exec.Command("sh", "-lc", "exec "+command)
+}
+
+func runServiceStop(runtime serviceRuntime, ownedPID int32) error {
+	pidSet := map[int32]struct{}{}
+	for _, snapshot := range runtime.processes {
+		if snapshot.PID > 0 {
+			pidSet[snapshot.PID] = struct{}{}
+		}
+	}
+	if runtime.process.PID > 0 {
+		pidSet[runtime.process.PID] = struct{}{}
+	}
+	if len(pidSet) == 0 {
+		return errors.New("no running process matched the selected service")
+	}
+
+	pids := make([]int32, 0, len(pidSet))
+	for pid := range pidSet {
+		pids = append(pids, pid)
+	}
+	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+
+	targetPIDs := pids
+	if ownedPID > 0 {
+		treePIDs := ownedProcessTreePIDs(ownedPID)
+		targetPIDs = intersectPIDs(pids, treePIDs)
+		if len(targetPIDs) == 0 {
+			for _, pid := range pids {
+				if pid == ownedPID {
+					targetPIDs = []int32{ownedPID}
+					break
+				}
+			}
+		}
+		if len(targetPIDs) == 0 {
+			if len(pids) == 1 {
+				targetPIDs = pids
+			} else {
+				return fmt.Errorf("refusing to stop service: tracked pid %d is no longer among %d matched processes", ownedPID, len(pids))
+			}
+		}
+	}
+	if ownedPID == 0 && len(targetPIDs) > 1 {
+		return fmt.Errorf("refusing to stop service: matched %d processes and none were started by Hangar", len(targetPIDs))
+	}
+
+	errs := make([]error, 0)
+	for _, pid := range targetPIDs {
+		if err := terminateProcessByPID(pid); err != nil {
+			errs = append(errs, fmt.Errorf("stop pid %d: %w", pid, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func processTreePIDs(rootPID int32) map[int32]struct{} {
+	tree := map[int32]struct{}{rootPID: {}}
+	queue := []int32{rootPID}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+
+		proc, err := process.NewProcess(pid)
+		if err != nil {
+			continue
+		}
+		children, err := proc.Children()
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if child == nil {
+				continue
+			}
+			if _, seen := tree[child.Pid]; seen {
+				continue
+			}
+			tree[child.Pid] = struct{}{}
+			queue = append(queue, child.Pid)
+		}
+	}
+	return tree
+}
+
+func terminateProcess(pid int32) error {
+	proc, err := process.NewProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Terminate()
+}
+
+func intersectPIDs(pids []int32, allowed map[int32]struct{}) []int32 {
+	out := make([]int32, 0, len(pids))
+	for _, pid := range pids {
+		if _, ok := allowed[pid]; ok {
+			out = append(out, pid)
+		}
+	}
+	return out
+}
+
+func runtimeContainsPID(runtime serviceRuntime, pid int32) bool {
+	if runtime.process.PID == pid {
+		return true
+	}
+	for _, snapshot := range runtime.processes {
+		if snapshot.PID == pid {
+			return true
+		}
+	}
+	return false
 }

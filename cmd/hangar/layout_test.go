@@ -128,3 +128,15 @@ func TestWrapToggleAffectsRightPanesOnly(t *testing.T) {
 		t.Fatalf("expected wrap toggle to enable on 't'")
 	}
 }
+
+func TestHelpIncludesServiceToggleHotkey(t *testing.T) {
+	m := newModel()
+	m.width = 100
+	help := m.renderHelpBox()
+	if !strings.Contains(help, "Start / stop the selected service") {
+		t.Fatalf("expected in-app help to describe the s hotkey, got %q", help)
+	}
+	if !strings.Contains(helpText, "s        Start the selected service when stopped, or stop it when running") {
+		t.Fatalf("expected CLI help text to describe the s hotkey, got %q", helpText)
+	}
+}
