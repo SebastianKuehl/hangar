@@ -48,6 +48,7 @@ bash install.sh   # rebuilds the binary in-place
 - `s`: start the selected service when stopped, or stop it when running
 - `i`: interrupt the current service check
 - `r`: retry an interrupted service check
+- `R`: restart the selected service, or restart all services when the Projects pane is focused
 - `h` / `l` (or ← / →): move focus between panes
 - `j` / `k` (or ↓ / ↑): move selection within the focused pane
 - `?`: show hotkey help modal
@@ -78,3 +79,5 @@ The Details pane updates with the selected service's path, command, process stat
 The Logs pane now reflects the selected service's runtime state too. For already-running external processes, Hangar can show detection details but cannot attach to arbitrary existing stdout streams cross-platform, so the pane explains that limitation instead of faking log output.
 
 When you press `s`, Hangar starts a stopped service or force-stops the confident running targets for that service. The selected service stays locked until runtime polling confirms the requested state, but you can still move around the UI and trigger `s` for other services while that happens.
+
+When you press `R` in the Services pane, Hangar restarts the selected service by stopping the matched process tree and launching the configured start command again. When you press `R` in the Projects pane, Hangar applies that same restart/start behavior across every service in the selected project that already has runtime information loaded.

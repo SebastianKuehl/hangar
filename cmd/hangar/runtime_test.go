@@ -673,6 +673,218 @@ func TestRuntimeRefreshUnlocksTimedOutTransition(t *testing.T) {
 	}
 }
 
+func TestUpdateRestartsRunningServiceWithR(t *testing.T) {
+	previousStart := startServiceProcess
+	previousStop := stopServiceProcesses
+	defer func() {
+		startServiceProcess = previousStart
+		stopServiceProcesses = previousStop
+	}()
+
+	stopCalls := 0
+	stopServiceProcesses = func(runtime serviceRuntime, ownedPID int32) error {
+		stopCalls++
+		if ownedPID != 42 {
+			t.Fatalf("expected owned pid 42, got %d", ownedPID)
+		}
+		return nil
+	}
+	startCalls := 0
+	startServiceProcess = func(project Project, service Service) (int32, error) {
+		startCalls++
+		return 88, nil
+	}
+
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	key := serviceKey(project, project.Services[0])
+	m := model{
+		cfg: Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{
+			{known: true, running: true, process: processSnapshot{PID: 42}, processes: []processSnapshot{{PID: 42}}},
+		},
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{key: 42},
+		focus:         paneServices,
+	}
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	got := updated.(model)
+	if cmd == nil {
+		t.Fatal("expected restart command to be scheduled")
+	}
+	transition := got.serviceStates[key]
+	if transition.phase != transitionPhaseRestartStopping {
+		t.Fatalf("expected restart to enter stopping phase, got %#v", transition)
+	}
+	if _, ok := got.serviceOwners[key]; ok {
+		t.Fatalf("expected restart to clear stale owner before new pid is known, got %#v", got.serviceOwners)
+	}
+
+	msg, ok := cmd().(serviceControlMsg)
+	if !ok {
+		t.Fatalf("expected serviceControlMsg, got %T", cmd())
+	}
+	if msg.err != nil {
+		t.Fatalf("expected no restart error, got %v", msg.err)
+	}
+	if msg.phase != transitionPhaseRestartStarting {
+		t.Fatalf("expected restart success to transition to restart-starting, got %q", msg.phase)
+	}
+	if msg.startedPID != 88 {
+		t.Fatalf("expected restarted pid 88, got %d", msg.startedPID)
+	}
+	if stopCalls != 1 || startCalls != 1 {
+		t.Fatalf("expected one stop and one start call, got stop=%d start=%d", stopCalls, startCalls)
+	}
+
+	updated, refreshCmd := got.Update(msg)
+	got = updated.(model)
+	if refreshCmd == nil {
+		t.Fatal("expected runtime refresh after restart succeeds")
+	}
+	if got.serviceOwners[key] != 88 {
+		t.Fatalf("expected restarted pid to be tracked, got %#v", got.serviceOwners)
+	}
+	if got.serviceStates[key].phase != transitionPhaseRestartStarting {
+		t.Fatalf("expected restart phase to remain pending until runtime confirms, got %#v", got.serviceStates[key])
+	}
+}
+
+func TestRestartFailureRestoresPreviousOwnedPID(t *testing.T) {
+	previousStop := stopServiceProcesses
+	defer func() { stopServiceProcesses = previousStop }()
+
+	stopServiceProcesses = func(runtime serviceRuntime, ownedPID int32) error {
+		if ownedPID != 42 {
+			t.Fatalf("expected owned pid 42, got %d", ownedPID)
+		}
+		return errors.New("stop failed")
+	}
+
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+		},
+	}
+	key := serviceKey(project, project.Services[0])
+	m := model{
+		cfg: Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{
+			{known: true, running: true, process: processSnapshot{PID: 42}, processes: []processSnapshot{{PID: 42}}},
+		},
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{key: 42},
+		focus:         paneServices,
+	}
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	got := updated.(model)
+	if cmd == nil {
+		t.Fatal("expected restart command to be scheduled")
+	}
+	if _, ok := got.serviceOwners[key]; ok {
+		t.Fatalf("expected owner to be hidden while restart is pending, got %#v", got.serviceOwners)
+	}
+
+	updated, _ = got.Update(cmd())
+	got = updated.(model)
+	if got.serviceOwners[key] != 42 {
+		t.Fatalf("expected failed restart to restore previous owner pid, got %#v", got.serviceOwners)
+	}
+	if _, ok := got.serviceStates[key]; ok {
+		t.Fatalf("expected failed restart to clear transition state, got %#v", got.serviceStates)
+	}
+}
+
+func TestUpdateRestartsAllServicesFromProjectsPane(t *testing.T) {
+	previousStart := startServiceProcess
+	previousStop := stopServiceProcesses
+	defer func() {
+		startServiceProcess = previousStart
+		stopServiceProcesses = previousStop
+	}()
+
+	started := []string{}
+	stopped := []string{}
+	stopServiceProcesses = func(runtime serviceRuntime, ownedPID int32) error {
+		stopped = append(stopped, runtime.process.Cmdline)
+		return nil
+	}
+	startServiceProcess = func(project Project, service Service) (int32, error) {
+		started = append(started, service.Name)
+		return int32(len(started) + 100), nil
+	}
+
+	project := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+			{Name: "web", Path: filepath.Join("apps", "web"), Command: "npm run start"},
+		},
+	}
+	apiKey := serviceKey(project, project.Services[0])
+	webKey := serviceKey(project, project.Services[1])
+	m := model{
+		cfg: Config{Projects: []Project{project}},
+		serviceRuntime: []serviceRuntime{
+			{known: true, running: true, process: processSnapshot{PID: 42, Cmdline: "api"}, processes: []processSnapshot{{PID: 42}}},
+			{known: true, running: false},
+		},
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{apiKey: 42},
+		focus:         paneProjects,
+	}
+	m.projects.selected = 0
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	got := updated.(model)
+	if cmd == nil {
+		t.Fatal("expected project restart command to be scheduled")
+	}
+	if got.serviceStates[apiKey].phase != transitionPhaseRestartStopping {
+		t.Fatalf("expected running service to restart, got %#v", got.serviceStates[apiKey])
+	}
+	if got.serviceStates[webKey].phase != transitionPhaseStarting {
+		t.Fatalf("expected stopped service to be queued for start, got %#v", got.serviceStates[webKey])
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if len(batch) != 2 {
+		t.Fatalf("expected two service commands, got %d", len(batch))
+	}
+	for _, subcmd := range batch {
+		msg, ok := subcmd().(serviceControlMsg)
+		if !ok {
+			t.Fatalf("expected batched serviceControlMsg, got %T", subcmd())
+		}
+		if msg.err != nil {
+			t.Fatalf("expected no project restart error, got %v", msg.err)
+		}
+	}
+
+	if !reflect.DeepEqual(started, []string{"api", "web"}) {
+		t.Fatalf("expected both services to be started, got %#v", started)
+	}
+	if !reflect.DeepEqual(stopped, []string{"api"}) {
+		t.Fatalf("expected only running services to be stopped first, got %#v", stopped)
+	}
+}
+
 func TestRunServiceStopAllowsOwnedProcessTrees(t *testing.T) {
 	previousTree := ownedProcessTreePIDs
 	previousTerminate := terminateProcessByPID

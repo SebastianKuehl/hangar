@@ -186,10 +186,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serviceControlMsg:
 		if msg.err != nil {
+			if transition, ok := m.serviceStates[msg.serviceKey]; ok && transition.previousOwner != 0 {
+				if m.serviceOwners == nil {
+					m.serviceOwners = map[string]int32{}
+				}
+				m.serviceOwners[msg.serviceKey] = transition.previousOwner
+			}
 			delete(m.serviceStates, msg.serviceKey)
 			m.errMsg = msg.err.Error()
 			m.syncSelectionState()
 			return m, nil
+		}
+		if transition, ok := m.serviceStates[msg.serviceKey]; ok {
+			transition.phase = msg.phase
+			transition.polls = 0
+			m.serviceStates[msg.serviceKey] = transition
 		}
 		if msg.startedPID != 0 {
 			if m.serviceOwners == nil {
@@ -311,30 +322,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 			return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading())
 		case "s":
-			project, ok := m.selectedProject()
-			if !ok {
+			return m, m.startStopSelectedService()
+		case "R":
+			switch m.focus {
+			case paneProjects:
+				return m, m.restartSelectedProject()
+			case paneServices:
+				return m, m.restartSelectedService()
+			default:
 				return m, nil
 			}
-			service, ok := m.selectedService()
-			if !ok {
-				return m, nil
-			}
-			runtime := m.selectedServiceRuntime()
-			if !runtime.known {
-				m.errMsg = "Wait for runtime detection before toggling a service."
-				return m, nil
-			}
-			serviceKey := serviceKey(project, service)
-			if _, busy := m.serviceStates[serviceKey]; busy {
-				return m, nil
-			}
-			m.serviceStates[serviceKey] = serviceTransition{targetRunning: !runtime.running}
-			m.errMsg = ""
-			m.syncSelectionState()
-			if runtime.running {
-				return m, stopServiceCmd(m.projects.selected, project, service, runtime, m.serviceOwners[serviceKey])
-			}
-			return m, startServiceCmd(m.projects.selected, project, service)
 		case "h", "left":
 			m.focusPrev()
 			return m, nil
@@ -488,6 +485,117 @@ func (m *model) syncSelectionState() {
 	m.logs.items = serviceLogItems(project, service, runtime, transition)
 }
 
+func (m *model) startStopSelectedService() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return nil
+	}
+	runtime := m.selectedServiceRuntime()
+	if !runtime.known {
+		m.errMsg = "Wait for runtime detection before toggling a service."
+		return nil
+	}
+	if runtime.running {
+		return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStopping)
+	}
+	return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
+}
+
+func (m *model) restartSelectedService() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	service, ok := m.selectedService()
+	if !ok {
+		return nil
+	}
+	runtime := m.selectedServiceRuntime()
+	if !runtime.known {
+		m.errMsg = "Wait for runtime detection before restarting a service."
+		return nil
+	}
+	if runtime.running {
+		return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseRestartStopping)
+	}
+	return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
+}
+
+func (m *model) restartSelectedProject() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	if len(project.Services) == 0 {
+		m.errMsg = "Selected project has no services to restart."
+		return nil
+	}
+
+	cmds := make([]tea.Cmd, 0, len(project.Services))
+	skippedUnknown := 0
+	for i, service := range project.Services {
+		runtime := m.runtimeForService(i)
+		if !runtime.known {
+			skippedUnknown++
+			continue
+		}
+		cmd := m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseRestartStopping)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		if skippedUnknown > 0 {
+			m.errMsg = "Wait for runtime detection before restarting this project's services."
+		} else {
+			m.errMsg = "No project services are ready to restart right now."
+		}
+		m.syncSelectionState()
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *model) queueServiceAction(projectIndex int, project Project, service Service, runtime serviceRuntime, phase serviceTransitionPhase) tea.Cmd {
+	key := serviceKey(project, service)
+	if _, busy := m.serviceStates[key]; busy {
+		return nil
+	}
+
+	ownedPID := m.serviceOwners[key]
+	targetRunning := phase != transitionPhaseStopping
+	m.serviceStates[key] = serviceTransition{targetRunning: targetRunning, phase: phase, previousOwner: ownedPID}
+	if phase == transitionPhaseRestartStopping {
+		delete(m.serviceOwners, key)
+	}
+	m.errMsg = ""
+	m.syncSelectionState()
+
+	switch phase {
+	case transitionPhaseStopping:
+		return stopServiceCmd(projectIndex, project, service, runtime, ownedPID)
+	case transitionPhaseRestartStopping:
+		if runtime.running {
+			return restartServiceCmd(projectIndex, project, service, runtime, ownedPID)
+		}
+		m.serviceStates[key] = serviceTransition{targetRunning: true, phase: transitionPhaseStarting}
+		return startServiceCmd(projectIndex, project, service)
+	default:
+		return startServiceCmd(projectIndex, project, service)
+	}
+}
+
+func (m model) runtimeForService(index int) serviceRuntime {
+	if index < 0 || index >= len(m.serviceRuntime) {
+		return serviceRuntime{}
+	}
+	return m.serviceRuntime[index]
+}
+
 func (m model) selectedProject() (Project, bool) {
 	if m.projects.selected < 0 || m.projects.selected >= len(m.cfg.Projects) {
 		return Project{}, false
@@ -533,18 +641,27 @@ func (m *model) reconcileServiceTransitions(project Project, runtime []serviceRu
 		if !ok {
 			continue
 		}
-		if i < len(runtime) && runtime[i].known && runtime[i].running == transition.targetRunning {
-			delete(m.serviceStates, key)
-			if !transition.targetRunning {
-				delete(m.serviceOwners, key)
+		if i < len(runtime) && runtime[i].known {
+			ownedPID := m.serviceOwners[key]
+			switch transition.phase {
+			case transitionPhaseStopping:
+				if !runtime[i].running {
+					delete(m.serviceStates, key)
+					delete(m.serviceOwners, key)
+					continue
+				}
+			case transitionPhaseStarting, transitionPhaseRestartStarting:
+				if runtime[i].running && (ownedPID == 0 || runtimeContainsPID(runtime[i], ownedPID)) {
+					delete(m.serviceStates, key)
+					continue
+				}
 			}
-			continue
 		}
 		transition.polls++
 		if transition.polls >= maxServiceTransitionPolls {
 			delete(m.serviceStates, key)
 			delete(m.serviceOwners, key)
-			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press s to try again.", transition.label(), service.Name)
+			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press %s to try again.", transition.label(), service.Name, retryHotkey(transition.phase))
 			continue
 		}
 		m.serviceStates[key] = transition
@@ -578,11 +695,18 @@ func (m *model) advanceServiceTransitionPollsOnError(project Project) {
 		if transition.polls >= maxServiceTransitionPolls {
 			delete(m.serviceStates, key)
 			delete(m.serviceOwners, key)
-			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press s to try again.", transition.label(), service.Name)
+			m.errMsg = fmt.Sprintf("Timed out while %s %s. Press %s to try again.", transition.label(), service.Name, retryHotkey(transition.phase))
 			continue
 		}
 		m.serviceStates[key] = transition
 	}
+}
+
+func retryHotkey(phase serviceTransitionPhase) string {
+	if phase == transitionPhaseRestartStopping || phase == transitionPhaseRestartStarting {
+		return "R"
+	}
+	return "s"
 }
 
 func (m *model) focusOrder() []paneID {
@@ -749,7 +873,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, s start/stop, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, s start/stop, r retry, R restart, ? help, q quit.")
 	}
 
 	var base string
@@ -1036,6 +1160,7 @@ func (m model) renderHelpBox() string {
 				{"s", "Start / stop the selected service"},
 				{"i", "Interrupt a running service check"},
 				{"r", "Retry an interrupted service check"},
+				{"R", "Restart selected service, or all services from Projects"},
 			},
 		},
 		{
@@ -1173,6 +1298,7 @@ TOGGLES
   s        Start the selected service when stopped, or stop it when running
   i        Interrupt the current service check
   r        Retry an interrupted service check
+  R        Restart the selected service, or restart all services from Projects
   ?        Show / hide the in-app hotkey help overlay
 
 GENERAL

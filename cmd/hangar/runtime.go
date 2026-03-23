@@ -36,24 +36,39 @@ type serviceRuntime struct {
 	processes []processSnapshot
 }
 
+type serviceTransitionPhase string
+
+const (
+	transitionPhaseStarting        serviceTransitionPhase = "starting"
+	transitionPhaseStopping        serviceTransitionPhase = "stopping"
+	transitionPhaseRestartStopping serviceTransitionPhase = "restart-stopping"
+	transitionPhaseRestartStarting serviceTransitionPhase = "restart-starting"
+)
+
 type serviceTransition struct {
 	targetRunning bool
+	phase         serviceTransitionPhase
+	previousOwner int32
 	polls         int
 }
 
 const maxServiceTransitionPolls = 5
 
 func (s serviceTransition) label() string {
-	if s.targetRunning {
-		return "starting"
+	switch s.phase {
+	case transitionPhaseRestartStopping, transitionPhaseRestartStarting:
+		return "restarting"
+	case transitionPhaseStopping:
+		return "stopping"
 	}
-	return "stopping"
+	return "starting"
 }
 
 type serviceControlMsg struct {
 	projectIndex int
 	serviceKey   string
 	startedPID   int32
+	phase        serviceTransitionPhase
 	err          error
 }
 
@@ -308,6 +323,7 @@ func startServiceCmd(projectIndex int, project Project, service Service) tea.Cmd
 			projectIndex: projectIndex,
 			serviceKey:   serviceKey(project, service),
 			startedPID:   pid,
+			phase:        transitionPhaseStarting,
 			err:          err,
 		}
 	}
@@ -318,7 +334,32 @@ func stopServiceCmd(projectIndex int, project Project, service Service, runtime 
 		return serviceControlMsg{
 			projectIndex: projectIndex,
 			serviceKey:   serviceKey(project, service),
+			phase:        transitionPhaseStopping,
 			err:          stopServiceProcesses(runtime, ownedPID),
+		}
+	}
+}
+
+func restartServiceCmd(projectIndex int, project Project, service Service, runtime serviceRuntime, ownedPID int32) tea.Cmd {
+	return func() tea.Msg {
+		if runtime.running {
+			if err := stopServiceProcesses(runtime, ownedPID); err != nil {
+				return serviceControlMsg{
+					projectIndex: projectIndex,
+					serviceKey:   serviceKey(project, service),
+					phase:        transitionPhaseRestartStopping,
+					err:          err,
+				}
+			}
+		}
+
+		pid, err := startServiceProcess(project, service)
+		return serviceControlMsg{
+			projectIndex: projectIndex,
+			serviceKey:   serviceKey(project, service),
+			startedPID:   pid,
+			phase:        transitionPhaseRestartStarting,
+			err:          err,
 		}
 	}
 }
