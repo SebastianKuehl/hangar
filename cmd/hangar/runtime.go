@@ -81,6 +81,15 @@ type runtimeRefreshMsg struct {
 	err          error
 }
 
+type serviceRuntimeRefreshMsg struct {
+	projectIndex int
+	serviceIndex int
+	requestID    int
+	serviceKey   string
+	runtime      serviceRuntime
+	err          error
+}
+
 type runtimeTickMsg time.Time
 
 var listProcessSnapshots = loadProcessSnapshots
@@ -108,6 +117,22 @@ func refreshProjectRuntimeCmd(requestID, projectIndex int, project Project) tea.
 			projectPath:  project.Path,
 			serviceCount: len(project.Services),
 			runtime:      matchProjectRuntime(project, snapshots),
+		}
+	}
+}
+
+func refreshServiceRuntimeCmd(requestID, projectIndex, serviceIndex int, project Project, service Service) tea.Cmd {
+	return func() tea.Msg {
+		snapshots, err := listProcessSnapshots()
+		if err != nil {
+			return serviceRuntimeRefreshMsg{projectIndex: projectIndex, serviceIndex: serviceIndex, requestID: requestID, serviceKey: serviceKey(project, service), err: err}
+		}
+		return serviceRuntimeRefreshMsg{
+			projectIndex: projectIndex,
+			serviceIndex: serviceIndex,
+			requestID:    requestID,
+			serviceKey:   serviceKey(project, service),
+			runtime:      matchServiceRuntime(project, service, snapshots),
 		}
 	}
 }
@@ -140,22 +165,26 @@ func loadProcessSnapshots() ([]processSnapshot, error) {
 func matchProjectRuntime(project Project, snapshots []processSnapshot) []serviceRuntime {
 	runtime := make([]serviceRuntime, len(project.Services))
 	for i, service := range project.Services {
-		serviceDir := canonicalRuntimePath(servicePath(project, service))
-		best := serviceRuntime{known: true}
-		for _, snapshot := range snapshots {
-			if !matchesServiceProcess(service, serviceDir, snapshot) {
-				continue
-			}
-			best.running = true
-			best.processes = append(best.processes, snapshot)
-			best.instances++
-			if shouldPreferProcess(snapshot, best.process) {
-				best.process = snapshot
-			}
-		}
-		runtime[i] = best
+		runtime[i] = matchServiceRuntime(project, service, snapshots)
 	}
 	return runtime
+}
+
+func matchServiceRuntime(project Project, service Service, snapshots []processSnapshot) serviceRuntime {
+	serviceDir := canonicalRuntimePath(servicePath(project, service))
+	best := serviceRuntime{known: true}
+	for _, snapshot := range snapshots {
+		if !matchesServiceProcess(service, serviceDir, snapshot) {
+			continue
+		}
+		best.running = true
+		best.processes = append(best.processes, snapshot)
+		best.instances++
+		if shouldPreferProcess(snapshot, best.process) {
+			best.process = snapshot
+		}
+	}
+	return best
 }
 
 func matchesServiceProcess(service Service, serviceDir string, snapshot processSnapshot) bool {

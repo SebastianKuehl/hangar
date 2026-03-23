@@ -24,7 +24,7 @@ func TestCreateProjectModalAllowsEmptyPath(t *testing.T) {
 
 func TestCreateServiceModalRequiresPathForPathlessProject(t *testing.T) {
 	var modal formModal
-	modal.openCreateService("Distributed", true)
+	modal.openCreateService(Project{Name: "Distributed"})
 
 	if !modal.fields[1].required {
 		t.Fatal("expected service path field to be required for pathless projects")
@@ -34,6 +34,11 @@ func TestCreateServiceModalRequiresPathForPathlessProject(t *testing.T) {
 	submit, close := modal.handleKey("enter")
 	if submit || close {
 		t.Fatalf("expected enter on first field to advance, got submit=%v close=%v", submit, close)
+	}
+
+	submit, close = modal.handleKey("enter")
+	if submit || close {
+		t.Fatalf("expected enter on required path field to advance to command field, got submit=%v close=%v", submit, close)
 	}
 
 	submit, close = modal.handleKey("enter")

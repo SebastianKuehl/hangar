@@ -629,6 +629,89 @@ func TestRuntimeRefreshUnlocksServiceAfterRequestedState(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateRestartsOnlyEditedService(t *testing.T) {
+	previousStart := startServiceProcess
+	previousStop := stopServiceProcesses
+	defer func() {
+		startServiceProcess = previousStart
+		stopServiceProcesses = previousStop
+	}()
+
+	started := []string{}
+	stopped := []string{}
+	startServiceProcess = func(project Project, service Service) (int32, error) {
+		started = append(started, service.Name)
+		return 77, nil
+	}
+	stopServiceProcesses = func(runtime serviceRuntime, ownedPID int32) error {
+		stopped = append(stopped, runtime.process.Cmdline)
+		return nil
+	}
+
+	oldProject := Project{
+		Name: "Demo",
+		Path: filepath.Join(string(filepath.Separator), "workspace", "demo"),
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+			{Name: "web", Path: filepath.Join("apps", "web"), Command: "npm run start"},
+		},
+	}
+	newProject := Project{
+		Name: "Demo",
+		Path: oldProject.Path,
+		Services: []Service{
+			{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run dev"},
+			{Name: "web", Path: filepath.Join("apps", "web"), Command: "npm run start"},
+		},
+	}
+	m := model{
+		cfg: Config{Projects: []Project{oldProject}},
+		serviceRuntime: []serviceRuntime{
+			{known: true, running: true, process: processSnapshot{PID: 42, Cmdline: "api-old"}, processes: []processSnapshot{{PID: 42}}},
+			{known: true, running: true, process: processSnapshot{PID: 88, Cmdline: "web-running"}, processes: []processSnapshot{{PID: 88}}},
+		},
+		serviceStates: map[string]serviceTransition{},
+		serviceOwners: map[string]int32{
+			serviceKey(oldProject, oldProject.Services[0]): 42,
+			serviceKey(oldProject, oldProject.Services[1]): 88,
+		},
+	}
+	m.projects.selected = 0
+	m.services.selected = 0
+	m.syncSelectionState()
+
+	updated, cmd := m.Update(serviceUpdatedMsg{
+		cfg:              Config{Projects: []Project{newProject}},
+		projectIndex:     0,
+		serviceIndex:     0,
+		previousProject:  oldProject,
+		previousService:  oldProject.Services[0],
+		previousRuntime:  m.serviceRuntime[0],
+		previousOwnedPID: 42,
+	})
+	got := updated.(model)
+	if cmd == nil {
+		t.Fatal("expected edited running service to schedule restart")
+	}
+	if got.serviceRuntime[1].process.PID != 88 {
+		t.Fatalf("expected other service runtime to remain intact, got %#v", got.serviceRuntime[1])
+	}
+
+	msg, ok := cmd().(serviceRestartMsg)
+	if !ok {
+		t.Fatalf("expected serviceRestartMsg, got %T", cmd())
+	}
+	if msg.err != nil {
+		t.Fatalf("expected no restart error, got %v", msg.err)
+	}
+	if !reflect.DeepEqual(stopped, []string{"api-old"}) {
+		t.Fatalf("expected only edited service to stop, got %#v", stopped)
+	}
+	if !reflect.DeepEqual(started, []string{"api"}) {
+		t.Fatalf("expected only edited service to restart, got %#v", started)
+	}
+}
+
 func TestRuntimeRefreshUnlocksTimedOutTransition(t *testing.T) {
 	project := Project{
 		Name: "Demo",

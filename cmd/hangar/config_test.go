@@ -181,7 +181,7 @@ func TestAddServiceInfersCommand(t *testing.T) {
 		t.Fatalf("saveConfig returned error: %v", err)
 	}
 
-	cfg, err := addService(0, "web", filepath.Join("apps", "web"))
+	cfg, err := addService(0, "web", filepath.Join("apps", "web"), "")
 	if err != nil {
 		t.Fatalf("addService returned error: %v", err)
 	}
@@ -205,11 +205,99 @@ func TestAddServiceRequiresPathForPathlessProject(t *testing.T) {
 		t.Fatalf("saveConfig returned error: %v", err)
 	}
 
-	if _, err := addService(0, "web", ""); err == nil {
+	if _, err := addService(0, "web", "", ""); err == nil {
 		t.Fatal("expected addService to reject a blank service path for a pathless project")
 	}
 }
 
+func TestServiceCommandOptionsUseRuntimeScripts(t *testing.T) {
+	projectDir := t.TempDir()
+	writePackageJSON(t, filepath.Join(projectDir, "apps", "api", "package.json"), `{"name":"api","scripts":{"dev":"node dev.js","start":"node server.js","test":"vitest"}}`)
+
+	project := Project{Name: "Demo", Path: projectDir}
+	got := serviceCommandOptions(project, filepath.Join("apps", "api"), "")
+	want := []string{"npm run dev", "npm run start", "npm run test"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("serviceCommandOptions = %#v, want %#v", got, want)
+	}
+}
+
+func TestServiceCommandOptionsPreserveCurrentCommand(t *testing.T) {
+	projectDir := t.TempDir()
+	writePackageJSON(t, filepath.Join(projectDir, "apps", "api", "package.json"), `{"name":"api","scripts":{"start":"node server.js"}}`)
+
+	project := Project{Name: "Demo", Path: projectDir}
+	got := serviceCommandOptions(project, filepath.Join("apps", "api"), "npm run dev")
+	want := []string{"npm run start", "npm run dev"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("serviceCommandOptions = %#v, want %#v", got, want)
+	}
+}
+
+func TestUpdateProjectPersistsEditedFields(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	projectDir := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{Name: "Old", Path: projectDir, Services: []Service{{Name: "api", Path: "apps/api", Command: "npm run start"}}},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	cfg, err := updateProject(0, "New", projectDir)
+	if err != nil {
+		t.Fatalf("updateProject returned error: %v", err)
+	}
+
+	got := cfg.Projects[0]
+	if got.Name != "New" || got.Path != projectDir {
+		t.Fatalf("project = %#v, want name/path updated", got)
+	}
+	if len(got.Services) != 1 || got.Services[0].Name != "api" {
+		t.Fatalf("expected existing services to be preserved, got %#v", got.Services)
+	}
+}
+
+func TestUpdateServicePersistsEditedFields(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	projectDir := t.TempDir()
+	serviceDir := filepath.Join(projectDir, "apps", "api")
+	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+		t.Fatalf("mkdir service dir: %v", err)
+	}
+	writePackageJSON(t, filepath.Join(serviceDir, "package.json"), `{"name":"api","scripts":{"start":"node server.js","dev":"node dev.js"}}`)
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{
+				Name: "Demo",
+				Path: projectDir,
+				Services: []Service{
+					{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	cfg, err := updateService(0, 0, "api-renamed", filepath.Join("apps", "api"), "npm run dev")
+	if err != nil {
+		t.Fatalf("updateService returned error: %v", err)
+	}
+
+	want := Service{Name: "api-renamed", Path: filepath.Join("apps", "api"), Command: "npm run dev"}
+	if got := cfg.Projects[0].Services[0]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("service = %#v, want %#v", got, want)
+	}
+}
 func TestLoadConfigFallsBackToBackup(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("HOME", configHome)
