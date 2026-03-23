@@ -56,4 +56,14 @@ Creating a project now requires a project folder. The entered path is normalized
 
 When a project is saved, Hangar scans that folder for Node and Bun services by looking for `package.json` files that define a `start` script. Each discovered service is added to the config automatically with either `npm run start` or `bun run start`.
 
-All pane contents outside project and service config are still intentionally **placeholder** data right now so we can validate navigation and layout.
+## Service runtime panes
+
+When you move the cursor through the Services pane, Hangar now polls the local process list and tries to match each service to a running Node/Bun process by service directory and runtime. The Services pane shows:
+
+- `●` when Hangar found a matching running process
+- `○` when no matching process is running
+- `◌` while runtime detection is still refreshing
+
+The Details pane updates with the selected service's path, command, process status, PID, memory, and start time.
+
+The Logs pane now reflects the selected service's runtime state too. For already-running external processes, Hangar can show detection details but cannot attach to arbitrary existing stdout streams cross-platform, so the pane explains that limitation instead of faking log output.

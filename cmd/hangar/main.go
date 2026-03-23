@@ -44,9 +44,11 @@ type model struct {
 	details  listPane
 	logs     listPane
 
-	cfg    Config    // in-memory config; source of truth for UI
-	modal  formModal
-	errMsg string // transient error displayed in status bar
+	cfg            Config // in-memory config; source of truth for UI
+	serviceRuntime []serviceRuntime
+	runtimeRequest int
+	modal          formModal
+	errMsg         string // transient error displayed in status bar
 }
 
 // projectItems converts a Config's projects to display strings.
@@ -58,15 +60,19 @@ func projectItems(cfg Config) []string {
 	return out
 }
 
-// serviceItems returns the service names for the project at idx.
-func serviceItems(cfg Config, projectIdx int) []string {
-	if projectIdx < 0 || projectIdx >= len(cfg.Projects) {
-		return []string{}
-	}
-	svcs := cfg.Projects[projectIdx].Services
-	out := make([]string, 0, len(svcs))
-	for _, s := range svcs {
-		out = append(out, s.Name)
+// serviceItems returns the service names for a project with runtime icons.
+func serviceItems(project Project, runtime []serviceRuntime) []string {
+	out := make([]string, 0, len(project.Services))
+	for i, s := range project.Services {
+		icon := "◌"
+		if i < len(runtime) && runtime[i].known {
+			if runtime[i].running {
+				icon = "●"
+			} else {
+				icon = "○"
+			}
+		}
+		out = append(out, icon+" "+s.Name)
 	}
 	return out
 }
@@ -74,7 +80,7 @@ func serviceItems(cfg Config, projectIdx int) []string {
 func newModel() model {
 	cfg, _ := loadConfig() // ignore load error on startup; app still works with empty state
 
-	return model{
+	m := model{
 		cfg:   cfg,
 		focus: paneProjects,
 		projects: listPane{
@@ -87,36 +93,24 @@ func newModel() model {
 			title:       "Services",
 			visible:     true,
 			placeholder: "",
-			items:       serviceItems(cfg, 0),
 		},
 		details: listPane{
 			title:       "Details",
 			visible:     true,
-			placeholder: "PLACEHOLDER: Replace with real details view.",
-			items: []string{
-				"Owner: you",
-				"Repo: github.com/SebastianKuehl/hangar",
-				"Env: dev",
-				"Status: healthy",
-			},
+			placeholder: "Select a service to inspect its runtime state.",
 		},
 		logs: listPane{
 			title:       "Logs",
 			visible:     true,
-			placeholder: "PLACEHOLDER: Replace with real log stream.",
-			items: []string{
-				"[info] starting...",
-				"[info] loading config",
-				"[warn] using placeholder data",
-				"[info] ready",
-				"[debug] focus navigation enabled",
-			},
+			placeholder: "Select a service to inspect its runtime state.",
 		},
 	}
+	m.syncSelectionState()
+	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -127,16 +121,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case configSavedMsg:
-		// Update in-memory config and refresh pane lists.
 		m.cfg = msg.cfg
-		m.projects.items = projectItems(m.cfg)
-		m.services.items = serviceItems(m.cfg, m.projects.selected)
+		m.serviceRuntime = nil
+		m.syncSelectionState()
 		m.errMsg = ""
-		return m, nil
+		return m, m.startRuntimeRefresh()
 
 	case configErrMsg:
 		m.errMsg = "Error saving config: " + msg.err.Error()
 		return m, nil
+
+	case runtimeRefreshMsg:
+		project, ok := m.selectedProject()
+		if !ok || msg.projectIndex != m.projects.selected || msg.requestID != m.runtimeRequest || msg.projectPath != project.Path || msg.serviceCount != len(project.Services) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.errMsg = "Error detecting runtime state: " + msg.err.Error()
+			return m, nil
+		}
+		m.serviceRuntime = msg.runtime
+		m.errMsg = ""
+		m.syncSelectionState()
+		return m, nil
+
+	case runtimeTickMsg:
+		return m, tea.Batch(nextRuntimeRefreshCmd(), m.startRuntimeRefresh())
 
 	case tea.KeyMsg:
 		k := msg.String()
@@ -218,22 +228,102 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "j", "down":
 			m.moveSelection(1)
 			if m.focus == paneProjects {
-				// Use in-memory config — no blocking disk read.
-				m.services.items = serviceItems(m.cfg, m.projects.selected)
 				m.services.selected = 0
+				m.serviceRuntime = nil
+				m.syncSelectionState()
+				return m, m.startRuntimeRefresh()
+			}
+			m.syncSelectionState()
+			if m.focus == paneServices {
+				return m, m.startRuntimeRefresh()
 			}
 			return m, nil
 		case "k", "up":
 			m.moveSelection(-1)
 			if m.focus == paneProjects {
-				m.services.items = serviceItems(m.cfg, m.projects.selected)
 				m.services.selected = 0
+				m.serviceRuntime = nil
+				m.syncSelectionState()
+				return m, m.startRuntimeRefresh()
+			}
+			m.syncSelectionState()
+			if m.focus == paneServices {
+				return m, m.startRuntimeRefresh()
 			}
 			return m, nil
 		}
 	}
 
 	return m, nil
+}
+
+func (m *model) startRuntimeRefresh() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	m.runtimeRequest++
+	return refreshProjectRuntimeCmd(m.runtimeRequest, m.projects.selected, project)
+}
+
+func (m *model) syncSelectionState() {
+	m.projects.items = projectItems(m.cfg)
+	m.projects.selected = clamp(m.projects.selected, 0, len(m.projects.items)-1)
+
+	project, ok := m.selectedProject()
+	if !ok {
+		m.serviceRuntime = nil
+		m.services.items = nil
+		m.services.selected = 0
+		m.details.placeholder = "Create a project and select a service to inspect it."
+		m.details.items = []string{"(no service selected)"}
+		m.logs.placeholder = "Create a project and select a service to inspect it."
+		m.logs.items = []string{"(no service selected)"}
+		return
+	}
+
+	if len(m.serviceRuntime) != len(project.Services) {
+		m.serviceRuntime = make([]serviceRuntime, len(project.Services))
+	}
+	m.services.items = serviceItems(project, m.serviceRuntime)
+	m.services.selected = clamp(m.services.selected, 0, len(project.Services)-1)
+
+	service, ok := m.selectedService()
+	if !ok {
+		m.details.placeholder = "Select a service to inspect its runtime state."
+		m.details.items = []string{"(no service selected)"}
+		m.logs.placeholder = "Select a service to inspect its runtime state."
+		m.logs.items = []string{"(no service selected)"}
+		return
+	}
+
+	runtime := m.selectedServiceRuntime()
+	m.details.placeholder = ""
+	m.details.items = serviceDetailsItems(project, service, runtime)
+	m.logs.placeholder = ""
+	m.logs.items = serviceLogItems(project, service, runtime)
+}
+
+func (m model) selectedProject() (Project, bool) {
+	if m.projects.selected < 0 || m.projects.selected >= len(m.cfg.Projects) {
+		return Project{}, false
+	}
+	return m.cfg.Projects[m.projects.selected], true
+}
+
+func (m model) selectedService() (Service, bool) {
+	project, ok := m.selectedProject()
+	if !ok || m.services.selected < 0 || m.services.selected >= len(project.Services) {
+		return Service{}, false
+	}
+	return project.Services[m.services.selected], true
+}
+
+func (m model) selectedServiceRuntime() serviceRuntime {
+	if m.services.selected < 0 || m.services.selected >= len(m.serviceRuntime) {
+		return serviceRuntime{}
+	}
+	return m.serviceRuntime[m.services.selected]
 }
 
 func (m *model) focusOrder() []paneID {
@@ -429,7 +519,7 @@ func (m model) viewMain() string {
 	if m.errMsg != "" {
 		contentH = max(0, m.height-1)
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true).Width(m.width)
-		statusBar = "\n" + errStyle.Render("⚠ " + m.errMsg)
+		statusBar = "\n" + errStyle.Render("⚠ "+m.errMsg)
 	}
 
 	rightVisible := m.details.visible || m.logs.visible

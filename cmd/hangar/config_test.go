@@ -123,6 +123,38 @@ func TestAddProjectDiscoversServicesAndPersistsConfig(t *testing.T) {
 	}
 }
 
+func TestAddServiceInfersCommand(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	projectDir := t.TempDir()
+	serviceDir := filepath.Join(projectDir, "apps", "web")
+	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+		t.Fatalf("mkdir service dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(serviceDir, "bun.lock"), []byte{}, 0o644); err != nil {
+		t.Fatalf("write bun lock: %v", err)
+	}
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{Name: "Demo", Path: projectDir},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	cfg, err := addService(0, "web", filepath.Join("apps", "web"))
+	if err != nil {
+		t.Fatalf("addService returned error: %v", err)
+	}
+
+	got := cfg.Projects[0].Services[0]
+	want := Service{Name: "web", Path: filepath.Join("apps", "web"), Command: "bun run start"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("service = %#v, want %#v", got, want)
+	}
+}
+
 func TestLoadConfigFallsBackToBackup(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("HOME", configHome)

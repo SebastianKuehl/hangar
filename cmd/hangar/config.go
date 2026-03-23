@@ -146,7 +146,7 @@ func addService(projectIndex int, name, path string) (Config, error) {
 
 	cfg.Projects[projectIndex].Services = append(
 		cfg.Projects[projectIndex].Services,
-		Service{Name: name, Path: normalizedPath},
+		Service{Name: name, Path: normalizedPath, Command: inferServiceCommand(cfg.Projects[projectIndex], normalizedPath)},
 	)
 	return cfg, saveConfig(cfg)
 }
@@ -374,6 +374,31 @@ func isWithinBase(relativePath string) bool {
 	}
 	parentPrefix := ".." + string(filepath.Separator)
 	return relativePath != ".." && !strings.HasPrefix(relativePath, parentPrefix)
+}
+
+func inferServiceCommand(project Project, servicePath string) string {
+	serviceDir := servicePath
+	if !filepath.IsAbs(serviceDir) {
+		switch serviceDir {
+		case "", ".":
+			serviceDir = project.Path
+		default:
+			serviceDir = filepath.Join(project.Path, serviceDir)
+		}
+	}
+
+	manifestPath := filepath.Join(serviceDir, "package.json")
+	if data, err := os.ReadFile(manifestPath); err == nil {
+		var manifest packageManifest
+		if err := json.Unmarshal(data, &manifest); err == nil {
+			return startCommand(detectRuntime(serviceDir, manifest))
+		}
+	}
+
+	if detectRuntime(serviceDir, packageManifest{}) == "bun" {
+		return "bun run start"
+	}
+	return "npm run start"
 }
 
 func replaceFileWindows(tmpName, path string) error {
