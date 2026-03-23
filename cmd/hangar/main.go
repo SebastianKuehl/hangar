@@ -519,26 +519,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			m.wrapText = !m.wrapText
 			return m, nil
-		case "i":
-			if !m.runtimePending && !m.runtimeLoading {
-				return m, nil
-			}
-			m.invalidateRuntimeRefresh(true)
-			m.errMsg = "Interrupted service check. Press r to retry."
-			m.syncSelectionState()
-			return m, nil
-		case "r":
-			if !m.runtimePaused {
-				return m, nil
-			}
-			m.invalidateRuntimeRefresh(false)
-			m.serviceRuntime = nil
-			m.syncSelectionState()
-			m.errMsg = ""
-			return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 		case "s":
 			return m, m.startStopSelectedService()
-		case "R":
+		case "r":
 			switch m.focus {
 			case paneProjects:
 				return m, m.restartSelectedProject()
@@ -1141,7 +1124,7 @@ func (m *model) advanceServiceTransitionPollsOnError(project Project) {
 
 func retryHotkey(phase serviceTransitionPhase) string {
 	if phase == transitionPhaseRestartStopping || phase == transitionPhaseRestartStarting {
-		return "R"
+		return "r"
 	}
 	return "s"
 }
@@ -1314,7 +1297,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, s start/stop, i interrupt, r retry, R restart, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, s start/stop, r restart, ? help, q quit.")
 	}
 
 	var base string
@@ -1592,9 +1575,7 @@ func (m model) renderHelpBox() string {
 			name: "Services",
 			rows: [][2]string{
 				{"s", "Start / stop the selected project or service"},
-				{"i", "Interrupt a running service check"},
-				{"r", "Retry an interrupted service check"},
-				{"R", "Restart selected service, or all services from Projects"},
+				{"r", "Restart selected service, or all services from Projects"},
 			},
 		},
 		{
@@ -1731,9 +1712,7 @@ TOGGLES
   t        Toggle wrapped text in Details and Logs
   e        Edit the selected project or service
   s        Start / stop the selected project or service
-  i        Interrupt the current service check
-  r        Retry an interrupted service check
-  R        Restart the selected service, or restart all services from Projects
+  r        Restart the selected service, or restart all services from Projects
   ?        Show / hide the in-app hotkey help overlay
 
 GENERAL

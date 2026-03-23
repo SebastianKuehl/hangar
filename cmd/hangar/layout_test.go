@@ -139,10 +139,7 @@ func TestHelpIncludesEditAndServiceToggleHotkeys(t *testing.T) {
 	if !strings.Contains(help, "Start / stop the selected project or service") {
 		t.Fatalf("expected in-app help to describe the s hotkey, got %q", help)
 	}
-	if !strings.Contains(help, "Interrupt a running service check") {
-		t.Fatalf("expected in-app help to describe the i hotkey, got %q", help)
-	}
-	if !strings.Contains(help, "Retry an interrupted service check") {
+	if !strings.Contains(help, "Restart selected service, or all services from Projects") {
 		t.Fatalf("expected in-app help to describe the r hotkey, got %q", help)
 	}
 	if !strings.Contains(helpText, "e        Edit the selected project or service") {
@@ -151,10 +148,7 @@ func TestHelpIncludesEditAndServiceToggleHotkeys(t *testing.T) {
 	if !strings.Contains(helpText, "s        Start / stop the selected project or service") {
 		t.Fatalf("expected CLI help text to describe the s hotkey, got %q", helpText)
 	}
-	if !strings.Contains(helpText, "i        Interrupt the current service check") {
-		t.Fatalf("expected CLI help text to describe the i hotkey, got %q", helpText)
-	}
-	if !strings.Contains(helpText, "r        Retry an interrupted service check") {
+	if !strings.Contains(helpText, "r        Restart the selected service, or restart all services from Projects") {
 		t.Fatalf("expected CLI help text to describe the r hotkey, got %q", helpText)
 	}
 }
