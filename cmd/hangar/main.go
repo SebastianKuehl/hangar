@@ -236,7 +236,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.serviceRuntime = msg.runtime
-		m.errMsg = ""
 		m.reconcileServiceTransitions(project, msg.runtime)
 		m.pruneServiceOwners(project, msg.runtime)
 		m.syncSelectionState()
@@ -319,7 +318,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if owner, ok := m.serviceOwners[msg.serviceKey]; ok && owner != 0 && !runtimeContainsPID(msg.runtime, owner) {
 			delete(m.serviceOwners, msg.serviceKey)
 		}
-		m.errMsg = ""
 		m.syncSelectionState()
 		return m, nil
 
@@ -1387,7 +1385,7 @@ func (m model) viewMain() string {
 	const barPad = 1    // horizontal padding on each side of both segments
 	hint := "? help"
 	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Padding(0, barPad)
-	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Background(barBg).Bold(true)
+	errStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Bold(true)
 
 	leftContent := ""
 	if m.errMsg != "" {
