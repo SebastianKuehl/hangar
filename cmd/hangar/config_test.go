@@ -472,6 +472,162 @@ services:
 	}
 }
 
+func TestBuildServiceDisplayRowsGroupsByRuntime(t *testing.T) {
+	project := Project{
+		Services: []Service{
+			{Name: "api", Runtime: "node"},
+			{Name: "web", Runtime: "bun"},
+			{Name: "worker", Runtime: "node"},
+			{Name: "api", Path: "services", ComposeFile: "docker-compose.yml", Runtime: "docker-compose"},
+			{Name: "postgres", Path: "services", ComposeFile: "docker-compose.yml", Runtime: "docker-compose"},
+		},
+	}
+
+	rows := buildServiceDisplayRows(project)
+
+	// Should have headers for node, bun, docker-compose + individual services
+	if len(rows) != 8 {
+		t.Fatalf("expected 8 rows (3 headers + 5 services), got %d", len(rows))
+	}
+
+	// First should be node header
+	if rows[0].kind != serviceRowGroupHeader || rows[0].runtime != "node" {
+		t.Errorf("row 0: expected node group header, got %#v", rows[0])
+	}
+
+	// Second and third should be api and worker (node services)
+	if rows[1].kind != serviceRowService || rows[1].serviceIndex != 0 {
+		t.Errorf("row 1: expected node service (api), got %#v", rows[1])
+	}
+	if rows[2].kind != serviceRowService || rows[2].serviceIndex != 2 {
+		t.Errorf("row 2: expected node service (worker), got %#v", rows[2])
+	}
+
+	// Fourth should be bun header
+	if rows[3].kind != serviceRowGroupHeader || rows[3].runtime != "bun" {
+		t.Errorf("row 3: expected bun group header, got %#v", rows[3])
+	}
+
+	// Fifth should be web (bun service)
+	if rows[4].kind != serviceRowService || rows[4].serviceIndex != 1 {
+		t.Errorf("row 4: expected bun service (web), got %#v", rows[4])
+	}
+
+	// Sixth should be docker-compose header
+	if rows[5].kind != serviceRowGroupHeader || rows[5].runtime != "docker-compose" {
+		t.Errorf("row 5: expected docker-compose group header, got %#v", rows[5])
+	}
+	if rows[5].groupLabel != "docker-compose.yml" {
+		t.Errorf("row 5: expected group label 'docker-compose.yml', got %q", rows[5].groupLabel)
+	}
+
+	// Seventh and eighth should be the docker-compose services
+	if rows[6].kind != serviceRowService || rows[6].serviceIndex != 3 {
+		t.Errorf("row 6: expected docker-compose service (api), got %#v", rows[6])
+	}
+	if rows[7].kind != serviceRowService || rows[7].serviceIndex != 4 {
+		t.Errorf("row 7: expected docker-compose service (postgres), got %#v", rows[7])
+	}
+}
+
+func TestBuildServiceDisplayRowsNoHeaderForSingleRuntime(t *testing.T) {
+	project := Project{
+		Services: []Service{
+			{Name: "api", Runtime: "node"},
+			{Name: "web", Runtime: "node"},
+		},
+	}
+
+	rows := buildServiceDisplayRows(project)
+
+	// No headers when all services share the same runtime
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows (no headers), got %d", len(rows))
+	}
+
+	for _, row := range rows {
+		if row.kind == serviceRowGroupHeader {
+			t.Errorf("expected no group headers for single runtime, found header: %#v", row)
+		}
+	}
+}
+
+func TestServiceItemsWithHeadersIndentsContainers(t *testing.T) {
+	project := Project{
+		Services: []Service{
+			{Name: "api", Runtime: "node"},
+			{Name: "web", Runtime: "bun"},
+		},
+	}
+
+	displayRows := buildServiceDisplayRows(project)
+	items := serviceItems(project, []serviceRuntime{
+		{known: true, running: true},
+		{known: true, running: false},
+	}, nil, 0, displayRows)
+
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items (2 headers + 2 services), got %d", len(items))
+	}
+
+	// Headers should have single space indent (icon + space + label)
+	if !strings.HasPrefix(items[0], " ") || strings.HasPrefix(items[0], "   ") {
+		t.Errorf("header should have single space indent: %q", items[0])
+	}
+	if !strings.HasPrefix(items[2], " ") || strings.HasPrefix(items[2], "   ") {
+		t.Errorf("header should have single space indent: %q", items[2])
+	}
+
+	// Services should have triple space indent when headers exist
+	if !strings.HasPrefix(items[1], "   ") {
+		t.Errorf("service should have triple space indent when headers exist: %q", items[1])
+	}
+	if !strings.HasPrefix(items[3], "   ") {
+		t.Errorf("service should have triple space indent when headers exist: %q", items[3])
+	}
+}
+
+func TestRuntimeGroupLabelFormatsCorrectly(t *testing.T) {
+	tests := []struct {
+		runtime     string
+		composeFile string
+		want        string
+	}{
+		{"node", "", "Node"},
+		{"bun", "", "Bun"},
+		{"gradle", "", "JVM"},
+		{"docker-compose", "docker-compose.yml", "docker-compose.yml"},
+		{"docker-compose", "infra/docker-compose.dev.yml", "docker-compose.dev.yml"},
+		{"unknown", "", "Unknown"},
+		{"", "", "Other"},
+	}
+
+	for _, tt := range tests {
+		got := runtimeGroupLabel(tt.runtime, tt.composeFile)
+		if got != tt.want {
+			t.Errorf("runtimeGroupLabel(%q, %q) = %q, want %q", tt.runtime, tt.composeFile, got, tt.want)
+		}
+	}
+}
+
+func TestEffectiveGroupKeyForDockerCompose(t *testing.T) {
+	s1 := Service{Runtime: "docker-compose", ComposeFile: "docker-compose.yml"}
+	s2 := Service{Runtime: "docker-compose", ComposeFile: "infra/docker-compose.dev.yml"}
+
+	got1 := effectiveGroupKey(s1)
+	got2 := effectiveGroupKey(s2)
+
+	// Different compose files should have different group keys
+	if got1 == got2 {
+		t.Errorf("different compose files should have different group keys: %q vs %q", got1, got2)
+	}
+
+	// Should contain the compose file path
+	if !strings.Contains(got1, "docker-compose.yml") {
+		t.Errorf("group key should contain compose file: %q", got1)
+	}
+}
+
 func canonicalPath(t *testing.T, path string) string {
 	t.Helper()
 
