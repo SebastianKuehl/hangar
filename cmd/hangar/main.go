@@ -64,30 +64,30 @@ type model struct {
 	details  listPane
 	logs     listPane
 
-	cfg              Config
-	serviceRuntime   []serviceRuntime
-	serviceStates    map[string]serviceTransition
-	serviceOwners    map[string]int32
-	runtimeRequest   int
-	runtimePending   bool
-	runtimePaused    bool
-	runtimeLoading   bool
-	loadingTicker    bool
-	loadingGen       int
-	loadingFrame     int
-	runtimeManager      *hangarruntime.Manager
-	logTailer           *logstream.Tailer
-	logEvents           chan tea.Msg
-	logLines            map[string][]string
-	logCancel           context.CancelFunc
-	logListenCtx        context.Context
-	logListenCancel     context.CancelFunc
-	logWatchID          int
-	followingService    string
+	cfg                   Config
+	serviceRuntime        []serviceRuntime
+	serviceStates         map[string]serviceTransition
+	serviceOwners         map[string]int32
+	runtimeRequest        int
+	runtimePending        bool
+	runtimePaused         bool
+	runtimeLoading        bool
+	loadingTicker         bool
+	loadingGen            int
+	loadingFrame          int
+	runtimeManager        *hangarruntime.Manager
+	logTailer             *logstream.Tailer
+	logEvents             chan tea.Msg
+	logLines              map[string][]string
+	logCancel             context.CancelFunc
+	logListenCtx          context.Context
+	logListenCancel       context.CancelFunc
+	logWatchID            int
+	followingService      string
 	serviceRuntimeRequest int
-	modal               formModal
-	confirm             confirmModal
-	errMsg              string
+	modal                 formModal
+	confirm               confirmModal
+	errMsg                string
 }
 
 const loadingFrameInterval = 120 * time.Millisecond
@@ -459,7 +459,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.cfg.Projects) == 0 {
 					m.errMsg = "Create a project first before adding services."
 				} else {
-					m.modal.openCreateService(m.cfg.Projects[m.projects.selected])
+					m.modal.openCreateService(m.cfg.Projects[m.projects.selected], m.cfg)
 				}
 			}
 			return m, nil
