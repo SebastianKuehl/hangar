@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -1127,93 +1126,6 @@ func discoverProjectsFromBasePath(basePath string) ([]Service, error) {
 	}
 
 	return discoverServices(projectPath)
-}
-
-const maxPathSuggestions = 5
-
-func discoverSubdirectories(basePath, filter string) []string {
-	if strings.TrimSpace(basePath) == "" {
-		return nil
-	}
-
-	absPath, err := normalizeAbsolutePath(basePath, "")
-	if err != nil {
-		return nil
-	}
-
-	info, err := os.Stat(absPath)
-	if err != nil || !info.IsDir() {
-		return nil
-	}
-
-	var dirs []string
-	filterLower := strings.ToLower(filter)
-
-	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-
-		if len(dirs) >= maxPathSuggestions {
-			return io.EOF
-		}
-
-		if !d.IsDir() {
-			return nil
-		}
-
-		switch d.Name() {
-		case ".git", "node_modules", ".gradle", "build", "target":
-			if path != absPath {
-				return filepath.SkipDir
-			}
-		}
-
-		if path == absPath {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(absPath, path)
-		if err != nil {
-			return nil
-		}
-
-		relPathLower := strings.ToLower(relPath)
-
-		matches := filterLower == ""
-		if !matches && strings.HasPrefix(relPathLower, filterLower) {
-			matches = true
-		}
-		if !matches {
-			filterParts := strings.Split(filterLower, string(filepath.Separator))
-			relPathParts := strings.Split(relPathLower, string(filepath.Separator))
-			if len(filterParts) > 0 && len(relPathParts) > 0 {
-				matches = true
-				for i, fp := range filterParts {
-					if fp == "" {
-						continue
-					}
-					if i >= len(relPathParts) || !strings.HasPrefix(relPathParts[i], fp) {
-						matches = false
-						break
-					}
-				}
-			}
-		}
-
-		if matches {
-			dirs = append(dirs, relPath)
-		}
-
-		return nil
-	})
-
-	if err != nil && err != io.EOF {
-		return nil
-	}
-
-	sort.Strings(dirs)
-	return dirs
 }
 
 func discoverAvailableServices(project Project, cfg Config) []string {
