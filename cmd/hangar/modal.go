@@ -626,6 +626,28 @@ func deleteServiceCmd(projectIndex, serviceIndex int) tea.Cmd {
 	}
 }
 
+// moveServiceUpCmd returns a tea.Cmd that moves a service up within its group.
+func moveServiceUpCmd(projectIndex, serviceIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := moveServiceUp(projectIndex, serviceIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+// moveServiceDownCmd returns a tea.Cmd that moves a service down within its group.
+func moveServiceDownCmd(projectIndex, serviceIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := moveServiceDown(projectIndex, serviceIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
 // ---- confirm modal ------------------------------------------------------------
 
 // confirmAction identifies what action the confirm modal is confirming.

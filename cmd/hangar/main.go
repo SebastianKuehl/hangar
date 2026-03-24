@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,31 +66,31 @@ type model struct {
 	details  listPane
 	logs     listPane
 
-	cfg                Config
-	serviceDisplayRows []serviceDisplayRow
-	serviceRuntime     []serviceRuntime
-	serviceStates      map[string]serviceTransition
-	serviceOwners      map[string]int32
-	runtimeRequest   int
-	runtimePending   bool
-	runtimePaused    bool
-	runtimeLoading   bool
-	loadingTicker    bool
-	loadingGen       int
-	loadingFrame     int
-	runtimeManager      *hangarruntime.Manager
-	logTailer           *logstream.Tailer
-	logEvents           chan tea.Msg
-	logLines            map[string][]string
-	logCancel           context.CancelFunc
-	logListenCtx        context.Context
-	logListenCancel     context.CancelFunc
-	logWatchID          int
-	followingService    string
+	cfg                   Config
+	serviceDisplayRows    []serviceDisplayRow
+	serviceRuntime        []serviceRuntime
+	serviceStates         map[string]serviceTransition
+	serviceOwners         map[string]int32
+	runtimeRequest        int
+	runtimePending        bool
+	runtimePaused         bool
+	runtimeLoading        bool
+	loadingTicker         bool
+	loadingGen            int
+	loadingFrame          int
+	runtimeManager        *hangarruntime.Manager
+	logTailer             *logstream.Tailer
+	logEvents             chan tea.Msg
+	logLines              map[string][]string
+	logCancel             context.CancelFunc
+	logListenCtx          context.Context
+	logListenCancel       context.CancelFunc
+	logWatchID            int
+	followingService      string
 	serviceRuntimeRequest int
-	modal               formModal
-	confirm             confirmModal
-	errMsg              string
+	modal                 formModal
+	confirm               confirmModal
+	errMsg                string
 }
 
 const loadingFrameInterval = 120 * time.Millisecond
@@ -110,13 +111,14 @@ func projectItems(cfg Config) []string {
 	return out
 }
 
-// serviceRowKind distinguishes group-header rows from actual service rows
+// serviceRowKind distinguishes group-header rows, separator rows, and actual service rows
 // in the services pane display list.
 type serviceRowKind int
 
 const (
 	serviceRowService     serviceRowKind = iota
 	serviceRowGroupHeader serviceRowKind = iota
+	serviceRowSeparator   serviceRowKind = iota
 )
 
 // serviceDisplayRow is one entry in the flattened services pane list.  It is
@@ -160,6 +162,24 @@ func effectiveGroupKey(s Service) string {
 	return rt
 }
 
+// runtimeGroupPriority returns a sort priority for runtime groups.
+// Lower values appear first: node, bun, java, docker.
+func runtimeGroupPriority(gk string) int {
+	switch gk {
+	case "node":
+		return 0
+	case "bun":
+		return 1
+	case "gradle", "java":
+		return 2
+	default:
+		if strings.HasPrefix(gk, "docker-compose:") {
+			return 3
+		}
+		return 4
+	}
+}
+
 // runtimeGroupLabel returns the human-readable label for a runtime group.
 func runtimeGroupLabel(rt, composeFile string) string {
 	switch rt {
@@ -185,23 +205,12 @@ func runtimeGroupLabel(rt, composeFile string) string {
 // buildServiceDisplayRows produces the flat display row list for the services
 // pane.  When all services share the same runtime group, headers are omitted
 // to keep the UI clean.  Services are re-ordered so same-runtime services are
-// always contiguous under their group header.
+// always contiguous under their group header.  Groups are sorted by fixed order:
+// node/bun, java/gradle, docker-compose.
 func buildServiceDisplayRows(project Project) []serviceDisplayRow {
 	if len(project.Services) == 0 {
 		return nil
 	}
-
-	// Determine unique groups in the order they first appear.
-	groups := map[string]bool{}
-	groupOrder := []string{}
-	for _, s := range project.Services {
-		gk := effectiveGroupKey(s)
-		if !groups[gk] {
-			groups[gk] = true
-			groupOrder = append(groupOrder, gk)
-		}
-	}
-	showHeaders := len(groupOrder) > 1
 
 	// Build a map from group key to services in that group (preserving index).
 	type indexedService struct {
@@ -214,18 +223,39 @@ func buildServiceDisplayRows(project Project) []serviceDisplayRow {
 		byGroup[gk] = append(byGroup[gk], indexedService{i, s})
 	}
 
-	rows := make([]serviceDisplayRow, 0, len(project.Services)+len(groupOrder))
-	for _, gk := range groupOrder {
+	// Determine unique groups and sort by fixed priority.
+	groupSet := map[string]bool{}
+	groupOrder := make([]string, 0, len(byGroup))
+	for gk := range byGroup {
+		groupSet[gk] = true
+	}
+	for gk := range groupSet {
+		groupOrder = append(groupOrder, gk)
+	}
+	sort.Slice(groupOrder, func(i, j int) bool {
+		if pi, pj := runtimeGroupPriority(groupOrder[i]), runtimeGroupPriority(groupOrder[j]); pi != pj {
+			return pi < pj
+		}
+		return groupOrder[i] < groupOrder[j]
+	})
+
+	showHeaders := len(groupOrder) > 1
+
+	rows := make([]serviceDisplayRow, 0, len(project.Services)+len(groupOrder)*2)
+	for gi, gk := range groupOrder {
+		if gi > 0 && showHeaders {
+			rows = append(rows, serviceDisplayRow{kind: serviceRowSeparator})
+		}
 		members := byGroup[gk]
 		if showHeaders {
 			rt := effectiveRuntime(members[0].svc)
 			cf := members[0].svc.ComposeFile
 			rows = append(rows, serviceDisplayRow{
-				kind:        serviceRowGroupHeader,
+				kind:         serviceRowGroupHeader,
 				serviceIndex: -1,
-				runtime:     rt,
-				groupLabel:  runtimeGroupLabel(rt, cf),
-				composeFile: cf,
+				runtime:      rt,
+				groupLabel:   runtimeGroupLabel(rt, cf),
+				composeFile:  cf,
 			})
 		}
 		for _, m := range members {
@@ -294,7 +324,11 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 
 	out := make([]string, 0, len(displayRows))
 	for _, row := range displayRows {
-		if row.kind == serviceRowGroupHeader {
+		switch row.kind {
+		case serviceRowSeparator:
+			out = append(out, "─")
+			continue
+		case serviceRowGroupHeader:
 			icon := groupHeaderIcon(project, runtime, states, row)
 			out = append(out, " "+icon+" "+row.groupLabel)
 			continue
@@ -758,6 +792,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
 			}
 			return m, nil
+		case "o":
+			if m.focus == paneServices {
+				return m, m.moveSelectedServiceUp()
+			}
+			return m, nil
+		case "O":
+			if m.focus == paneServices {
+				return m, m.moveSelectedServiceDown()
+			}
+			return m, nil
 		}
 	}
 
@@ -938,6 +982,46 @@ func (m *model) restartSelectedService() tea.Cmd {
 		return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseRestartStopping)
 	}
 	return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
+}
+
+func (m *model) moveSelectedServiceUp() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	svcIdx := m.selectedServiceIndex()
+	if svcIdx < 0 {
+		return nil
+	}
+	if svcIdx == 0 {
+		m.errMsg = "Service is already at the top of its group."
+		return nil
+	}
+	if effectiveGroupKey(project.Services[svcIdx]) != effectiveGroupKey(project.Services[svcIdx-1]) {
+		m.errMsg = "Cannot move service across runtime groups. Move the header instead."
+		return nil
+	}
+	return moveServiceUpCmd(m.projects.selected, svcIdx)
+}
+
+func (m *model) moveSelectedServiceDown() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	svcIdx := m.selectedServiceIndex()
+	if svcIdx < 0 {
+		return nil
+	}
+	if svcIdx >= len(project.Services)-1 {
+		m.errMsg = "Service is already at the bottom of its group."
+		return nil
+	}
+	if effectiveGroupKey(project.Services[svcIdx]) != effectiveGroupKey(project.Services[svcIdx+1]) {
+		m.errMsg = "Cannot move service across runtime groups. Move the header instead."
+		return nil
+	}
+	return moveServiceDownCmd(m.projects.selected, svcIdx)
 }
 
 func (m *model) toggleServiceGroup(project Project, header serviceDisplayRow) tea.Cmd {
@@ -1899,6 +1983,7 @@ func (m model) renderHelpBox() string {
 			rows: [][2]string{
 				{"s", "Start / stop the selected project or service"},
 				{"r", "Restart selected service, or all services from Projects"},
+				{"o/O", "Move selected service up / down within its runtime group"},
 			},
 		},
 		{

@@ -485,9 +485,9 @@ func TestBuildServiceDisplayRowsGroupsByRuntime(t *testing.T) {
 
 	rows := buildServiceDisplayRows(project)
 
-	// Should have headers for node, bun, docker-compose + individual services
-	if len(rows) != 8 {
-		t.Fatalf("expected 8 rows (3 headers + 5 services), got %d", len(rows))
+	// Should have: 2 separators + 3 headers + 5 services = 10 rows
+	if len(rows) != 10 {
+		t.Fatalf("expected 10 rows (2 separators + 3 headers + 5 services), got %d", len(rows))
 	}
 
 	// First should be node header
@@ -503,30 +503,40 @@ func TestBuildServiceDisplayRowsGroupsByRuntime(t *testing.T) {
 		t.Errorf("row 2: expected node service (worker), got %#v", rows[2])
 	}
 
-	// Fourth should be bun header
-	if rows[3].kind != serviceRowGroupHeader || rows[3].runtime != "bun" {
-		t.Errorf("row 3: expected bun group header, got %#v", rows[3])
+	// Fourth should be separator between node and bun
+	if rows[3].kind != serviceRowSeparator {
+		t.Errorf("row 3: expected separator, got %#v", rows[3])
 	}
 
-	// Fifth should be web (bun service)
-	if rows[4].kind != serviceRowService || rows[4].serviceIndex != 1 {
-		t.Errorf("row 4: expected bun service (web), got %#v", rows[4])
+	// Fifth should be bun header
+	if rows[4].kind != serviceRowGroupHeader || rows[4].runtime != "bun" {
+		t.Errorf("row 4: expected bun group header, got %#v", rows[4])
 	}
 
-	// Sixth should be docker-compose header
-	if rows[5].kind != serviceRowGroupHeader || rows[5].runtime != "docker-compose" {
-		t.Errorf("row 5: expected docker-compose group header, got %#v", rows[5])
-	}
-	if rows[5].groupLabel != "docker-compose.yml" {
-		t.Errorf("row 5: expected group label 'docker-compose.yml', got %q", rows[5].groupLabel)
+	// Sixth should be web (bun service)
+	if rows[5].kind != serviceRowService || rows[5].serviceIndex != 1 {
+		t.Errorf("row 5: expected bun service (web), got %#v", rows[5])
 	}
 
-	// Seventh and eighth should be the docker-compose services
-	if rows[6].kind != serviceRowService || rows[6].serviceIndex != 3 {
-		t.Errorf("row 6: expected docker-compose service (api), got %#v", rows[6])
+	// Seventh should be separator between bun and docker-compose
+	if rows[6].kind != serviceRowSeparator {
+		t.Errorf("row 6: expected separator, got %#v", rows[6])
 	}
-	if rows[7].kind != serviceRowService || rows[7].serviceIndex != 4 {
-		t.Errorf("row 7: expected docker-compose service (postgres), got %#v", rows[7])
+
+	// Eighth should be docker-compose header
+	if rows[7].kind != serviceRowGroupHeader || rows[7].runtime != "docker-compose" {
+		t.Errorf("row 7: expected docker-compose group header, got %#v", rows[7])
+	}
+	if rows[7].groupLabel != "docker-compose.yml" {
+		t.Errorf("row 7: expected group label 'docker-compose.yml', got %q", rows[7].groupLabel)
+	}
+
+	// Ninth and tenth should be the docker-compose services
+	if rows[8].kind != serviceRowService || rows[8].serviceIndex != 3 {
+		t.Errorf("row 8: expected docker-compose service (api), got %#v", rows[8])
+	}
+	if rows[9].kind != serviceRowService || rows[9].serviceIndex != 4 {
+		t.Errorf("row 9: expected docker-compose service (postgres), got %#v", rows[9])
 	}
 }
 
@@ -566,24 +576,34 @@ func TestServiceItemsWithHeadersIndentsContainers(t *testing.T) {
 		{known: true, running: false},
 	}, nil, 0, displayRows)
 
-	if len(items) != 4 {
-		t.Fatalf("expected 4 items (2 headers + 2 services), got %d", len(items))
+	// Should have: 1 separator + 2 headers + 2 services = 5 items
+	if len(items) != 5 {
+		t.Fatalf("expected 5 items (1 separator + 2 headers + 2 services), got %d", len(items))
 	}
 
-	// Headers should have single space indent (icon + space + label)
+	// First should be node header
 	if !strings.HasPrefix(items[0], " ") || strings.HasPrefix(items[0], "   ") {
 		t.Errorf("header should have single space indent: %q", items[0])
 	}
-	if !strings.HasPrefix(items[2], " ") || strings.HasPrefix(items[2], "   ") {
-		t.Errorf("header should have single space indent: %q", items[2])
-	}
 
-	// Services should have triple space indent when headers exist
+	// Second should be api service (triple space indent)
 	if !strings.HasPrefix(items[1], "   ") {
 		t.Errorf("service should have triple space indent when headers exist: %q", items[1])
 	}
-	if !strings.HasPrefix(items[3], "   ") {
-		t.Errorf("service should have triple space indent when headers exist: %q", items[3])
+
+	// Third should be separator
+	if items[2] != "─" {
+		t.Errorf("expected separator '─', got: %q", items[2])
+	}
+
+	// Fourth should be bun header
+	if !strings.HasPrefix(items[3], " ") || strings.HasPrefix(items[3], "   ") {
+		t.Errorf("header should have single space indent: %q", items[3])
+	}
+
+	// Fifth should be web service (triple space indent)
+	if !strings.HasPrefix(items[4], "   ") {
+		t.Errorf("service should have triple space indent when headers exist: %q", items[4])
 	}
 }
 
@@ -625,6 +645,176 @@ func TestEffectiveGroupKeyForDockerCompose(t *testing.T) {
 	// Should contain the compose file path
 	if !strings.Contains(got1, "docker-compose.yml") {
 		t.Errorf("group key should contain compose file: %q", got1)
+	}
+}
+
+func TestRuntimeGroupPriorityOrdersGroups(t *testing.T) {
+	tests := []struct {
+		groupKey string
+		priority int
+	}{
+		{"node", 0},
+		{"bun", 1},
+		{"gradle", 2},
+		{"java", 2},
+		{"docker-compose:docker-compose.yml", 3},
+		{"unknown", 4},
+	}
+
+	for _, tt := range tests {
+		got := runtimeGroupPriority(tt.groupKey)
+		if got != tt.priority {
+			t.Errorf("runtimeGroupPriority(%q) = %d, want %d", tt.groupKey, got, tt.priority)
+		}
+	}
+}
+
+func TestMoveServiceUpWithinGroup(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{
+				Name: "Demo",
+				Path: "/tmp/demo",
+				Services: []Service{
+					{Name: "first", Runtime: "node"},
+					{Name: "second", Runtime: "node"},
+					{Name: "third", Runtime: "node"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	cfg, err := moveServiceUp(0, 2)
+	if err != nil {
+		t.Fatalf("moveServiceUp returned error: %v", err)
+	}
+
+	names := []string{}
+	for _, s := range cfg.Projects[0].Services {
+		names = append(names, s.Name)
+	}
+	want := []string{"first", "third", "second"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("services = %v, want %v", names, want)
+	}
+}
+
+func TestMoveServiceDownWithinGroup(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{
+				Name: "Demo",
+				Path: "/tmp/demo",
+				Services: []Service{
+					{Name: "first", Runtime: "node"},
+					{Name: "second", Runtime: "node"},
+					{Name: "third", Runtime: "node"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	cfg, err := moveServiceDown(0, 0)
+	if err != nil {
+		t.Fatalf("moveServiceDown returned error: %v", err)
+	}
+
+	names := []string{}
+	for _, s := range cfg.Projects[0].Services {
+		names = append(names, s.Name)
+	}
+	want := []string{"second", "first", "third"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("services = %v, want %v", names, want)
+	}
+}
+
+func TestMoveServiceCannotCrossGroups(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{
+				Name: "Demo",
+				Path: "/tmp/demo",
+				Services: []Service{
+					{Name: "node-service", Runtime: "node"},
+					{Name: "bun-service", Runtime: "bun"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	_, err := moveServiceUp(0, 1)
+	if err == nil {
+		t.Fatal("expected error when moving bun-service up across groups")
+	}
+
+	_, err = moveServiceDown(0, 0)
+	if err == nil {
+		t.Fatal("expected error when moving node-service down across groups")
+	}
+}
+
+func TestBuildServiceDisplayRowsSortsGroupsByPriority(t *testing.T) {
+	project := Project{
+		Services: []Service{
+			{Name: "docker-svc", Runtime: "docker-compose", ComposeFile: "docker.yml"},
+			{Name: "gradle-svc", Runtime: "gradle"},
+			{Name: "bun-svc", Runtime: "bun"},
+			{Name: "node-svc", Runtime: "node"},
+		},
+	}
+
+	rows := buildServiceDisplayRows(project)
+
+	// Find the positions of each group header
+	nodePos := -1
+	bunPos := -1
+	gradlePos := -1
+	dockerPos := -1
+
+	for i, row := range rows {
+		if row.kind == serviceRowGroupHeader {
+			switch row.runtime {
+			case "node":
+				nodePos = i
+			case "bun":
+				bunPos = i
+			case "gradle":
+				gradlePos = i
+			case "docker-compose":
+				dockerPos = i
+			}
+		}
+	}
+
+	if nodePos < 0 || bunPos < 0 || gradlePos < 0 || dockerPos < 0 {
+		t.Fatalf("expected all groups to be present, got node=%d, bun=%d, gradle=%d, docker=%d",
+			nodePos, bunPos, gradlePos, dockerPos)
+	}
+
+	if nodePos > bunPos {
+		t.Errorf("node should come before bun")
+	}
+	if bunPos > gradlePos {
+		t.Errorf("bun should come before gradle")
+	}
+	if gradlePos > dockerPos {
+		t.Errorf("gradle should come before docker")
 	}
 }
 

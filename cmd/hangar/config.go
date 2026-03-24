@@ -218,6 +218,46 @@ func deleteService(projectIndex, serviceIndex int) (Config, error) {
 	return cfg, saveConfig(cfg)
 }
 
+// moveServiceUp moves the service at serviceIndex up within its runtime group.
+func moveServiceUp(projectIndex, serviceIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range", projectIndex)
+	}
+	services := cfg.Projects[projectIndex].Services
+	if serviceIndex < 1 || serviceIndex >= len(services) {
+		return cfg, fmt.Errorf("cannot move service at index %d", serviceIndex)
+	}
+	if effectiveGroupKey(services[serviceIndex]) != effectiveGroupKey(services[serviceIndex-1]) {
+		return cfg, fmt.Errorf("cannot move service across runtime groups")
+	}
+	services[serviceIndex-1], services[serviceIndex] = services[serviceIndex], services[serviceIndex-1]
+	return cfg, saveConfig(cfg)
+}
+
+// moveServiceDown moves the service at serviceIndex down within its runtime group.
+func moveServiceDown(projectIndex, serviceIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range", projectIndex)
+	}
+	services := cfg.Projects[projectIndex].Services
+	if serviceIndex < 0 || serviceIndex >= len(services)-1 {
+		return cfg, fmt.Errorf("cannot move service at index %d", serviceIndex)
+	}
+	if effectiveGroupKey(services[serviceIndex]) != effectiveGroupKey(services[serviceIndex+1]) {
+		return cfg, fmt.Errorf("cannot move service across runtime groups")
+	}
+	services[serviceIndex], services[serviceIndex+1] = services[serviceIndex+1], services[serviceIndex]
+	return cfg, saveConfig(cfg)
+}
+
 // updateService updates an existing service's editable fields and persists.
 func updateService(projectIndex, serviceIndex int, name, path, command string) (Config, error) {
 	cfg, err := loadConfig()
