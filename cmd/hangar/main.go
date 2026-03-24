@@ -114,6 +114,10 @@ func projectItems(cfg Config) []string {
 func serviceItems(project Project, runtime []serviceRuntime, states map[string]serviceTransition, loadingFrame int) []string {
 	out := make([]string, 0, len(project.Services))
 	for i, s := range project.Services {
+		if s.Ignored {
+			out = append(out, " ⊘ "+s.Name)
+			continue
+		}
 		var icon string
 		if _, pending := states[serviceKey(project, s)]; pending {
 			icon = "◔"
@@ -205,7 +209,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.serviceIndex < len(m.serviceRuntime) {
 			m.serviceRuntime[msg.serviceIndex] = serviceRuntime{}
 		}
-		if msg.previousRuntime.running {
+		if msg.previousRuntime.running && serviceRuntimeChanged(msg.previousService, newService) {
 			m.serviceStates[newKey] = serviceTransition{targetRunning: true}
 			m.syncSelectionState()
 			return m, restartEditedServiceCmd(msg.projectIndex, msg.serviceIndex, msg.previousProject, msg.previousService, msg.previousRuntime, msg.previousOwnedPID, project, newService)
@@ -417,7 +421,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !ok {
 						return m, nil
 					}
-					return m, updateServiceCmd(projectIndex, serviceIndex, name, path, command, project, service, m.selectedServiceRuntime(), m.serviceOwners[serviceKey(project, service)])
+					return m, updateServiceCmd(projectIndex, serviceIndex, name, path, command, m.modal.ignored(), project, service, m.selectedServiceRuntime(), m.serviceOwners[serviceKey(project, service)])
 				}
 				return m, nil
 			}
@@ -518,6 +522,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "t":
 			m.wrapText = !m.wrapText
+			return m, nil
+		case "i":
+			if m.focus == paneServices {
+				project, ok := m.selectedProject()
+				if !ok {
+					return m, nil
+				}
+				_, ok = m.selectedService()
+				if !ok {
+					return m, nil
+				}
+				return m, toggleIgnoreServiceCmd(m.projects.selected, m.services.selected, project)
+			}
 			return m, nil
 		case "s":
 			return m, m.startStopSelectedService()
@@ -700,6 +717,17 @@ func (m *model) startStopSelectedService() tea.Cmd {
 	return m.toggleService(project, service, m.selectedServiceRuntime())
 }
 
+// toggleIgnoreServiceCmd flips the Ignored flag on a service and reloads the config.
+func toggleIgnoreServiceCmd(projectIndex, serviceIndex int, project Project) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := toggleServiceIgnored(projectIndex, serviceIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
 func (m *model) restartSelectedService() tea.Cmd {
 	project, ok := m.selectedProject()
 	if !ok {
@@ -733,6 +761,9 @@ func (m *model) restartSelectedProject() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(project.Services))
 	skippedUnknown := 0
 	for i, service := range project.Services {
+		if service.Ignored {
+			continue
+		}
 		runtime := m.runtimeForService(i)
 		if !runtime.known {
 			skippedUnknown++
@@ -798,6 +829,13 @@ func (m model) selectedProject() (Project, bool) {
 	return m.cfg.Projects[m.projects.selected], true
 }
 
+// serviceRuntimeChanged reports whether fields that affect the running process
+// (name, path, command) differ between two service definitions. Changes to
+// metadata-only fields like Ignored do not require a restart.
+func serviceRuntimeChanged(prev, next Service) bool {
+	return prev.Name != next.Name || prev.Path != next.Path || prev.Command != next.Command
+}
+
 func (m model) selectedService() (Service, bool) {
 	project, ok := m.selectedProject()
 	if !ok || m.services.selected < 0 || m.services.selected >= len(project.Services) {
@@ -832,6 +870,10 @@ func (m *model) toggleProject(project Project) tea.Cmd {
 			m.errMsg = "Wait for pending service transitions before toggling a project."
 			return nil
 		}
+		// Ignored services don't influence the start/stop decision.
+		if service.Ignored {
+			continue
+		}
 		if m.serviceRuntime[i].running {
 			shouldStop = true
 		}
@@ -839,6 +881,10 @@ func (m *model) toggleProject(project Project) tea.Cmd {
 
 	cmds := make([]tea.Cmd, 0, len(project.Services))
 	for i, service := range project.Services {
+		// When starting a project, skip ignored services entirely.
+		if !shouldStop && service.Ignored {
+			continue
+		}
 		runtime := m.serviceRuntime[i]
 		if shouldStop && !runtime.running {
 			continue
@@ -1297,7 +1343,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, s start/stop, r restart, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, i ignore, s start/stop, r restart, ? help, q quit.")
 	}
 
 	var base string
@@ -1576,6 +1622,7 @@ func (m model) renderHelpBox() string {
 			rows: [][2]string{
 				{"s", "Start / stop the selected project or service"},
 				{"r", "Restart selected service, or all services from Projects"},
+				{"i", "Toggle ignore for the selected service (ignored services are not auto-started)"},
 			},
 		},
 		{
