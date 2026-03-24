@@ -289,7 +289,7 @@ func TestUpdateServicePersistsEditedFields(t *testing.T) {
 		t.Fatalf("saveConfig returned error: %v", err)
 	}
 
-	cfg, err := updateService(0, 0, "api-renamed", filepath.Join("apps", "api"), "npm run dev")
+	cfg, err := updateService(0, 0, "api-renamed", filepath.Join("apps", "api"), "npm run dev", false)
 	if err != nil {
 		t.Fatalf("updateService returned error: %v", err)
 	}

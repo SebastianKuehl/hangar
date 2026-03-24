@@ -183,12 +183,15 @@ func (f *formModal) openEditProject(project Project) {
 }
 
 // openCreateService resets the modal for service creation within a project.
-func (f *formModal) openCreateService(project Project) {
+func (f *formModal) openCreateService(project Project, cfg Config) {
 	pathLabel := "Path (optional)"
 	pathRequired := strings.TrimSpace(project.Path) == ""
 	if pathRequired {
 		pathLabel = "Path"
 	}
+
+	suggestions := discoverAvailableServices(project, cfg)
+
 	*f = formModal{
 		mode:        modalCreateService,
 		project:     project,
@@ -197,6 +200,7 @@ func (f *formModal) openCreateService(project Project) {
 			{label: "Service name", required: true},
 			{label: pathLabel, required: pathRequired},
 			{label: "Custom command", required: true},
+			newSelectField("Suggestions", false, suggestions, ""),
 		},
 	}
 	f.syncServiceCommandField("")
@@ -212,9 +216,17 @@ func (f *formModal) openEditService(project Project, service Service) {
 			{label: "Service name", value: service.Name, required: true},
 			{label: "Path (optional)", value: service.Path},
 			newCommandField("Command", true, nil, service.Command),
+			newSelectField("Ignore", false, []string{"no", "yes"}, boolToYesNo(service.Ignored)),
 		},
 	}
 	f.syncServiceCommandField(service.Command)
+}
+
+func boolToYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 func (f *formModal) commandField() *formField {
@@ -273,6 +285,28 @@ func (f *formModal) syncServiceCommandField(existingCommand string) {
 	commandField.setCommandOptions(options, command)
 }
 
+func (f *formModal) applySuggestion() {
+	if f.mode != modalCreateService || len(f.fields) < 4 {
+		return
+	}
+
+	suggestionField := &f.fields[3]
+	selected := suggestionField.selectedOption()
+	if selected == "" {
+		return
+	}
+
+	parts := strings.Split(selected, " | ")
+	if len(parts) != 3 {
+		return
+	}
+
+	f.fields[0].value = parts[0]
+	f.fields[1].value = parts[1]
+
+	f.syncServiceCommandField(parts[2])
+}
+
 // close dismisses the modal without submitting.
 func (f *formModal) close() {
 	f.mode = modalNone
@@ -317,6 +351,9 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		f.errMsg = ""
 		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex < len(f.fields[f.activeField].options)-1 {
 			f.fields[f.activeField].cycleOption(1)
+			if f.isServiceMode() && f.activeField == 3 {
+				f.applySuggestion()
+			}
 			return false, false
 		}
 		f.activeField = (f.activeField + 1) % len(f.fields)
@@ -324,6 +361,9 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		f.errMsg = ""
 		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex > 0 {
 			f.fields[f.activeField].cycleOption(-1)
+			if f.isServiceMode() && f.activeField == 3 {
+				f.applySuggestion()
+			}
 			return false, false
 		}
 		f.activeField = (f.activeField - 1 + len(f.fields)) % len(f.fields)
@@ -331,11 +371,17 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		if f.fields[f.activeField].kind == fieldSelect {
 			f.errMsg = ""
 			f.fields[f.activeField].cycleOption(-1)
+			if f.isServiceMode() && f.activeField == 3 {
+				f.applySuggestion()
+			}
 		}
 	case "right", "j", " ":
 		if f.fields[f.activeField].kind == fieldSelect {
 			f.errMsg = ""
 			f.fields[f.activeField].cycleOption(1)
+			if f.isServiceMode() && f.activeField == 3 {
+				f.applySuggestion()
+			}
 		}
 	case "enter":
 		if f.activeField < len(f.fields)-1 {
@@ -409,6 +455,14 @@ func (f *formModal) command() string {
 		return custom
 	}
 	return f.selectedCommand()
+}
+
+// ignored returns whether the Ignore toggle is set to "yes" in the edit service form.
+func (f *formModal) ignored() bool {
+	if f.mode != modalEditService || len(f.fields) < 4 {
+		return false
+	}
+	return f.fields[3].selectedOption() == "yes"
 }
 
 // configErrMsg is sent to the model when a config I/O error occurs.
@@ -586,9 +640,9 @@ func saveServiceCmd(projectIndex int, name, path, command string) tea.Cmd {
 	}
 }
 
-func updateServiceCmd(projectIndex, serviceIndex int, name, path, command string, previousProject Project, previousService Service, previousRuntime serviceRuntime, previousOwnedPID int32) tea.Cmd {
+func updateServiceCmd(projectIndex, serviceIndex int, name, path, command string, ignored bool, previousProject Project, previousService Service, previousRuntime serviceRuntime, previousOwnedPID int32) tea.Cmd {
 	return func() tea.Msg {
-		cfg, err := updateService(projectIndex, serviceIndex, name, path, command)
+		cfg, err := updateService(projectIndex, serviceIndex, name, path, command, ignored)
 		if err != nil {
 			return configErrMsg{err}
 		}
