@@ -1383,7 +1383,7 @@ func (m model) viewMain() string {
 
 	barBg := colorBorder // matches pane border color
 	const barPad = 1    // horizontal padding on each side of both segments
-	hint := "? help"
+	hint := "q quit  ? help"
 	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Padding(0, barPad)
 	errStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Bold(true)
 
