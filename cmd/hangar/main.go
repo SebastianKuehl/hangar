@@ -106,7 +106,11 @@ type loadingTickMsg struct {
 func projectItems(cfg Config) []string {
 	out := make([]string, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {
-		out = append(out, p.Name)
+		name := p.Name
+		if p.Default {
+			name = "★ " + name
+		}
+		out = append(out, name)
 	}
 	return out
 }
@@ -371,12 +375,20 @@ func newModel() model {
 
 	listenCtx, listenCancel := context.WithCancel(context.Background())
 
+	defaultIndex := 0
+	for i, p := range cfg.Projects {
+		if p.Default {
+			defaultIndex = i
+			break
+		}
+	}
+
 	m := model{
 		cfg:             cfg,
 		focus:           paneProjects,
 		serviceStates:   map[string]serviceTransition{},
 		serviceOwners:   map[string]int32{},
-		projects:        listPane{title: "Projects", visible: false, items: projectItems(cfg)},
+		projects:        listPane{title: "Projects", visible: false, items: projectItems(cfg), selected: defaultIndex},
 		services:        listPane{title: "Services", visible: true},
 		details:         listPane{title: "Details", visible: true, placeholder: "Select a service to inspect its runtime state."},
 		logs:            listPane{title: "Logs", visible: true, placeholder: "Select a service to inspect its runtime state."},
@@ -726,6 +738,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.modal.openEditService(project, service)
 				return m, nil
+			}
+			return m, nil
+		case "D":
+			if m.focus == paneProjects {
+				project, ok := m.selectedProject()
+				if !ok {
+					return m, nil
+				}
+				if project.Default {
+					m.errMsg = "Project is already the default."
+					return m, nil
+				}
+				return m, setProjectAsDefaultCmd(m.projects.selected)
 			}
 			return m, nil
 		case "p":
@@ -2148,6 +2173,7 @@ func (m model) renderHelpBox() string {
 			rows: [][2]string{
 				{"c", "Create project or service (context-sensitive)"},
 				{"e", "Edit selected project or service"},
+				{"D", "Set selected project as default"},
 				{"backspace", "Delete selected project or service"},
 			},
 		},
