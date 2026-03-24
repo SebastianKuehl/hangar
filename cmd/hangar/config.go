@@ -578,6 +578,7 @@ func serviceFromPackageManifest(projectPath, manifestPath string) (Service, bool
 	if serviceName == "" {
 		serviceName = filepath.Base(serviceDir)
 	}
+	serviceName = formatWorktreeServiceName(serviceName, relativePath)
 
 	rt := detectRuntime(serviceDir, manifest)
 	return Service{
@@ -643,6 +644,7 @@ func serviceFromGradleBuild(projectPath, buildFile string) (Service, error) {
 	if relativePath == "." {
 		serviceName = filepath.Base(projectPath)
 	}
+	serviceName = formatWorktreeServiceName(serviceName, relativePath)
 
 	executable := gradleExecutable(serviceDir, projectPath)
 	return Service{
@@ -769,10 +771,15 @@ func servicesFromComposeFile(projectPath, composePath string) ([]Service, error)
 	}
 	sort.Strings(names)
 
+	worktreePrefix := formatWorktreeServiceName("", relPath)
+	if worktreePrefix != "" {
+		worktreePrefix = worktreePrefix + ":"
+	}
+
 	var result []Service
 	for _, name := range names {
 		result = append(result, Service{
-			Name:        name,
+			Name:        worktreePrefix + name,
 			Path:        relPath,
 			Command:     "docker compose -f " + shellQuote(composeFilename) + " up " + shellQuote(name),
 			Runtime:     "docker-compose",
@@ -1049,6 +1056,20 @@ func isWorktreePath(servicePath, projectPath string) bool {
 		return false
 	}
 	return strings.HasPrefix(string(data), "gitdir: ")
+}
+
+func formatWorktreeServiceName(serviceName, servicePath string) string {
+	parts := strings.Split(filepath.ToSlash(servicePath), "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == ".worktrees" {
+			if i > 0 {
+				parentService := parts[i-1]
+				worktreeName := parts[i+1]
+				return parentService + ":" + worktreeName
+			}
+		}
+	}
+	return serviceName
 }
 
 func getWorktreeInfo(servicePath, projectPath string) (worktreeName, repoPath string) {
