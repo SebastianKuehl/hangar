@@ -184,7 +184,7 @@ func restartServiceCmd(projectIndex int, project Project, service Service, runti
 }
 
 func serviceKey(project Project, service Service) string {
-	return project.Path + "\x00" + service.Path + "\x00" + service.Name
+	return project.Path + "\x00" + service.Path + "\x00" + service.Name + "\x00" + service.ComposeFile
 }
 
 func runtimeServiceConfig(project Project, service Service) hangarruntime.ServiceConfig {
@@ -198,6 +198,7 @@ func runtimeServiceConfig(project Project, service Service) hangarruntime.Servic
 		Name:        service.Name,
 		Path:        path,
 		Command:     service.Command,
+		ComposeFile: service.ComposeFile,
 	}
 }
 

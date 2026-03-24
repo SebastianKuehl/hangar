@@ -15,14 +15,17 @@ func TestServiceItemsShowsRuntimeIcons(t *testing.T) {
 	project := Project{
 		Services: []Service{{Name: "api"}, {Name: "web"}, {Name: "worker"}},
 	}
+	displayRows := buildServiceDisplayRows(project)
 
 	got := serviceItems(project, []serviceRuntime{
 		{known: true, running: true},
 		{known: true, running: false},
 		{},
-	}, nil, 0)
+	}, nil, 0, displayRows)
 
-	want := []string{"● api", "○ web", "| worker"}
+	// All three services share the same inferred runtime (node), so no group
+	// headers are shown and all rows use the single-runtime indent.
+	want := []string{" ● api", " ○ web", " | worker"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("serviceItems = %#v, want %#v", got, want)
 	}

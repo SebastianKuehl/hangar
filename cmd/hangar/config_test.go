@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -69,9 +70,9 @@ func TestDiscoverServices(t *testing.T) {
 	}
 
 	want := []Service{
-		{Name: "root-app", Path: ".", Command: "npm run start"},
-		{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start"},
-		{Name: "web", Path: filepath.Join("apps", "web"), Command: "bun run start"},
+		{Name: "root-app", Path: ".", Command: "npm run start", Runtime: "node"},
+		{Name: "api", Path: filepath.Join("apps", "api"), Command: "npm run start", Runtime: "node"},
+		{Name: "web", Path: filepath.Join("apps", "web"), Command: "bun run start", Runtime: "bun"},
 	}
 	if !reflect.DeepEqual(services, want) {
 		t.Fatalf("discoverServices = %#v, want %#v", services, want)
@@ -117,8 +118,8 @@ func TestAddProjectDiscoversServicesAndPersistsConfig(t *testing.T) {
 	}
 
 	wantServices := []Service{
-		{Name: "demo-root", Path: ".", Command: "npm run start"},
-		{Name: "web", Path: filepath.Join("apps", "web"), Command: "bun run start"},
+		{Name: "demo-root", Path: ".", Command: "npm run start", Runtime: "node"},
+		{Name: "web", Path: filepath.Join("apps", "web"), Command: "bun run start", Runtime: "bun"},
 	}
 	if !reflect.DeepEqual(project.Services, wantServices) {
 		t.Fatalf("project.Services = %#v, want %#v", project.Services, wantServices)
@@ -367,6 +368,107 @@ func writePackageJSON(t *testing.T, path, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestDiscoverGradleServices(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// Root gradle project with gradlew
+	writeFile(t, filepath.Join(projectDir, "gradlew"), "#!/bin/sh\nexec gradle \"$@\"")
+	if err := os.Chmod(filepath.Join(projectDir, "gradlew"), 0o755); err != nil {
+		t.Fatalf("chmod gradlew: %v", err)
+	}
+	writeFile(t, filepath.Join(projectDir, "build.gradle"), `plugins { id 'java' }`)
+
+	// A sub-module build file (gradlew is in the parent)
+	writeFile(t, filepath.Join(projectDir, "api", "build.gradle"), `plugins { id 'java' }`)
+
+	// Should be skipped (inside build output dir)
+	writeFile(t, filepath.Join(projectDir, "build", "tmp", "build.gradle"), `plugins { id 'java' }`)
+
+	services, err := discoverGradleServices(projectDir)
+	if err != nil {
+		t.Fatalf("discoverGradleServices returned error: %v", err)
+	}
+
+	if len(services) != 2 {
+		t.Fatalf("expected 2 services, got %d: %#v", len(services), services)
+	}
+	for _, s := range services {
+		if s.Runtime != "gradle" {
+			t.Errorf("service %q: Runtime = %q, want %q", s.Name, s.Runtime, "gradle")
+		}
+		if !strings.Contains(s.Command, "gradlew") && !strings.Contains(s.Command, "gradle") {
+			t.Errorf("service %q: unexpected Command %q", s.Name, s.Command)
+		}
+	}
+}
+
+func TestDiscoverDockerComposeServices(t *testing.T) {
+	projectDir := t.TempDir()
+
+	compose := `
+services:
+  postgres:
+    image: postgres:15
+  redis:
+    image: redis:7
+`
+	writeFile(t, filepath.Join(projectDir, "docker-compose.yml"), compose)
+
+	composeDev := `
+services:
+  nginx:
+    image: nginx:latest
+`
+	writeFile(t, filepath.Join(projectDir, "infra", "docker-compose.dev.yml"), composeDev)
+
+	services, err := discoverDockerComposeServices(projectDir)
+	if err != nil {
+		t.Fatalf("discoverDockerComposeServices returned error: %v", err)
+	}
+
+	if len(services) != 3 {
+		t.Fatalf("expected 3 services, got %d: %#v", len(services), services)
+	}
+
+	// Services should be sorted by path then composeFile then name.
+	rootServices := []Service{}
+	infraServices := []Service{}
+	for _, s := range services {
+		if s.Runtime != "docker-compose" {
+			t.Errorf("service %q: Runtime = %q, want docker-compose", s.Name, s.Runtime)
+		}
+		if s.Path == "." {
+			rootServices = append(rootServices, s)
+		} else {
+			infraServices = append(infraServices, s)
+		}
+	}
+	if len(rootServices) != 2 {
+		t.Fatalf("expected 2 root services, got %d", len(rootServices))
+	}
+	if rootServices[0].Name != "postgres" || rootServices[1].Name != "redis" {
+		t.Fatalf("unexpected root service names: %v", []string{rootServices[0].Name, rootServices[1].Name})
+	}
+	if len(infraServices) != 1 || infraServices[0].Name != "nginx" {
+		t.Fatalf("unexpected infra services: %#v", infraServices)
+	}
+	// Verify command format
+	if !strings.Contains(rootServices[0].Command, "docker compose") {
+		t.Errorf("postgres command %q does not contain 'docker compose'", rootServices[0].Command)
 	}
 }
 
