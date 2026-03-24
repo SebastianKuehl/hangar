@@ -1847,7 +1847,7 @@ func (m model) View() string {
 	if m.width < 60 || m.height < 10 {
 		return lipgloss.NewStyle().Padding(1, 2).Render(
 			"Terminal too small. Resize to at least 60x10.\n\n" +
-				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, i ignore, s start/stop, r restart, ? help, q quit.")
+				"Hotkeys: h/l focus, j/k move, p/d/a toggle panes, t wrap, c create, e edit, i ignore, s start/stop, r restart, o/O move svc, ? help, q/esc quit.")
 	}
 
 	var base string
@@ -2170,8 +2170,7 @@ func (m model) renderHelpBox() string {
 			name: "Help / Quit",
 			rows: [][2]string{
 				{"?", "Show/close this help"},
-				{"esc", "Close help"},
-				{"q", "Quit"},
+				{"q / esc", "Quit"},
 			},
 		},
 	}
@@ -2297,9 +2296,8 @@ TOGGLES
   ?        Show / hide the in-app hotkey help overlay
 
 GENERAL
-  q        Quit
+  q / Esc  Quit
   Ctrl+C   Quit
-  Esc      Close the help overlay
 
 OPTIONS
   --help   Print this help message and exit
