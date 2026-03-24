@@ -1376,9 +1376,10 @@ func (m model) viewMain() string {
 	// Always reserve 1 row for the bottom bar.
 	contentH := max(0, m.height-1)
 
+	barBg := colorBorder // matches pane border color
 	hint := "? help"
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true)
+	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg)
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Background(barBg).Bold(true)
 
 	leftContent := ""
 	if m.errMsg != "" {
@@ -1393,7 +1394,7 @@ func (m model) viewMain() string {
 	}
 	// Truncate error text so the bar is always exactly one row.
 	leftContent = ansi.Truncate(leftContent, leftWidth, "…")
-	leftStyle := lipgloss.NewStyle().Width(leftWidth).MaxHeight(1)
+	leftStyle := lipgloss.NewStyle().Width(leftWidth).MaxHeight(1).Background(barBg)
 	statusBar := "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftContent), hintRendered)
 
 	rightVisible := m.details.visible || m.logs.visible
