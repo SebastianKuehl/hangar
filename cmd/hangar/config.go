@@ -829,6 +829,12 @@ func inferServiceCommand(project Project, servicePath string) string {
 
 func serviceCommandOptions(project Project, servicePath, currentCommand string) []string {
 	serviceDir := resolveServiceDir(project, servicePath)
+
+	info, err := os.Stat(serviceDir)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+
 	manifestPath := filepath.Join(serviceDir, "package.json")
 	if data, err := os.ReadFile(manifestPath); err == nil {
 		var manifest packageManifest
@@ -840,10 +846,7 @@ func serviceCommandOptions(project Project, servicePath, currentCommand string) 
 		}
 	}
 
-	if strings.TrimSpace(currentCommand) != "" {
-		return []string{strings.TrimSpace(currentCommand)}
-	}
-	return []string{inferServiceCommand(project, servicePath)}
+	return nil
 }
 
 func appendCommandOption(options []string, currentCommand string) []string {
