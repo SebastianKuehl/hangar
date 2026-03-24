@@ -193,6 +193,16 @@ func addService(projectIndex int, name, path, command string) (Config, error) {
 		return cfg, err
 	}
 
+	serviceName := strings.TrimSpace(name)
+	if serviceName == "" || isWorktreePath(normalizedPath, cfg.Projects[projectIndex].Path) {
+		worktreeName, repoPath := getWorktreeInfo(normalizedPath, cfg.Projects[projectIndex].Path)
+		if worktreeName != "" && repoPath != "" {
+			serviceName = repoPath + ":" + worktreeName
+		} else if serviceName == "" {
+			serviceName = filepath.Base(normalizedPath)
+		}
+	}
+
 	command = strings.TrimSpace(command)
 	if command == "" {
 		command = inferServiceCommand(cfg.Projects[projectIndex], normalizedPath)
@@ -200,7 +210,7 @@ func addService(projectIndex int, name, path, command string) (Config, error) {
 
 	cfg.Projects[projectIndex].Services = append(
 		cfg.Projects[projectIndex].Services,
-		Service{Name: name, Path: normalizedPath, Command: command},
+		Service{Name: serviceName, Path: normalizedPath, Command: command},
 	)
 	return cfg, saveConfig(cfg)
 }
@@ -369,6 +379,12 @@ func newProject(name, inputPath string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+
+	worktreeServices, err := discoverWorktrees(projectPath)
+	if err != nil {
+		return Project{}, err
+	}
+	services = append(services, worktreeServices...)
 
 	return Project{
 		Name:     name,
@@ -891,6 +907,185 @@ func loadConfigBackup(path string) ([]byte, error) {
 	return os.ReadFile(path + ".bak")
 }
 
+func discoverWorktrees(repoPath string) ([]Service, error) {
+	var services []Service
+
+	gitDir := filepath.Join(repoPath, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil {
+		return nil, nil
+	}
+
+	if info.IsDir() {
+		worktreesDir := filepath.Join(gitDir, "worktrees")
+		entries, err := os.ReadDir(worktreesDir)
+		if err != nil {
+			return nil, nil
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			worktreeName := entry.Name()
+			worktreePath := filepath.Join(repoPath, worktreeName)
+
+			if _, err := os.Stat(worktreePath); err != nil {
+				continue
+			}
+
+			svc := serviceFromWorktree(repoPath, worktreeName, worktreePath)
+			services = append(services, svc)
+		}
+	} else {
+		data, err := os.ReadFile(gitDir)
+		if err != nil || !strings.HasPrefix(string(data), "gitdir: ") {
+			return nil, nil
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		for _, line := range lines {
+			if !strings.HasPrefix(line, "gitdir: ") {
+				continue
+			}
+			gitDirPath := strings.TrimSpace(line[8:])
+			if filepath.IsAbs(gitDirPath) {
+				worktreesDir := filepath.Join(gitDirPath, "worktrees")
+				entries, err := os.ReadDir(worktreesDir)
+				if err != nil {
+					continue
+				}
+
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+					worktreeName := entry.Name()
+					worktreePath := filepath.Join(repoPath, worktreeName)
+
+					if _, err := os.Stat(worktreePath); err != nil {
+						continue
+					}
+
+					svc := serviceFromWorktree(repoPath, worktreeName, worktreePath)
+					services = append(services, svc)
+				}
+			}
+		}
+	}
+
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
+
+	return services, nil
+}
+
+func serviceFromWorktree(repoPath, worktreeName, worktreePath string) Service {
+	relPath, _ := filepath.Rel(repoPath, worktreePath)
+	relPath = filepath.Clean(relPath)
+
+	command := inferServiceCommandFromPath(worktreePath)
+
+	return Service{
+		Name:    repoPath + ":" + worktreeName,
+		Path:    relPath,
+		Command: command,
+	}
+}
+
+func inferServiceCommandFromPath(servicePath string) string {
+	manifestPath := filepath.Join(servicePath, "package.json")
+	if data, err := os.ReadFile(manifestPath); err == nil {
+		var manifest packageManifest
+		if err := json.Unmarshal(data, &manifest); err == nil {
+			rt := detectRuntime(servicePath, manifest)
+			return startCommand(rt)
+		}
+	}
+
+	if rt := detectRuntime(servicePath, packageManifest{}); rt == "bun" {
+		return "bun run start"
+	}
+	return "npm run start"
+}
+
+func isWorktreePath(servicePath, projectPath string) bool {
+	if filepath.IsAbs(servicePath) {
+		gitFile := filepath.Join(servicePath, ".git")
+		data, err := os.ReadFile(gitFile)
+		if err != nil {
+			return false
+		}
+		return strings.HasPrefix(string(data), "gitdir: ")
+	}
+
+	if projectPath == "" {
+		return false
+	}
+
+	absPath := filepath.Join(projectPath, servicePath)
+	gitFile := filepath.Join(absPath, ".git")
+	data, err := os.ReadFile(gitFile)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(string(data), "gitdir: ")
+}
+
+func getWorktreeInfo(servicePath, projectPath string) (worktreeName, repoPath string) {
+	var absPath string
+	if filepath.IsAbs(servicePath) {
+		absPath = servicePath
+	} else if projectPath != "" {
+		absPath = filepath.Join(projectPath, servicePath)
+	} else {
+		return "", ""
+	}
+
+	gitFile := filepath.Join(absPath, ".git")
+	data, err := os.ReadFile(gitFile)
+	if err != nil {
+		return "", ""
+	}
+
+	if !strings.HasPrefix(string(data), "gitdir: ") {
+		return "", ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "gitdir: ") {
+			continue
+		}
+		gitDirPath := strings.TrimSpace(line[8:])
+		if !filepath.IsAbs(gitDirPath) {
+			continue
+		}
+
+		gitDir := filepath.Dir(gitDirPath)
+		worktreeName = filepath.Base(gitDirPath)
+		if filepath.Base(gitDir) == "worktrees" {
+			mainGitDir := filepath.Join(gitDir, "..", "gitdir")
+			mainGitDir = filepath.Clean(mainGitDir)
+			if mainData, err := os.ReadFile(mainGitDir); err == nil {
+				mainPath := strings.TrimSpace(string(mainData))
+				repoPath = filepath.Dir(mainPath)
+			}
+		}
+		break
+	}
+
+	if repoPath == "" {
+		repoPath = filepath.Dir(absPath)
+	}
+	if worktreeName == "" {
+		worktreeName = filepath.Base(absPath)
+	}
+
+	return worktreeName, repoPath
+}
+
 func discoverProjectsFromBasePath(basePath string) ([]Service, error) {
 	if strings.TrimSpace(basePath) == "" {
 		return nil, nil
@@ -976,6 +1171,59 @@ func discoverAvailableServices(project Project, cfg Config) []string {
 						})
 					}
 				}
+			}
+		}
+	}
+
+	projectPathAbs := ""
+	if project.Path != "" {
+		var err error
+		projectPathAbs, err = normalizeAbsolutePath(project.Path, "")
+		if err != nil {
+			projectPathAbs = ""
+		}
+	}
+
+	for _, svc := range project.Services {
+		svcPath := svc.Path
+		if svcPath == "" || svcPath == "." {
+			svcPath = project.Path
+		} else if !filepath.IsAbs(svcPath) {
+			svcPath = filepath.Join(project.Path, svcPath)
+		}
+
+		svcPathAbs, err := normalizeAbsolutePath(svcPath, "")
+		if err != nil {
+			continue
+		}
+
+		info, err := os.Stat(svcPathAbs)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+
+		worktrees, err := discoverWorktrees(svcPathAbs)
+		if err != nil {
+			continue
+		}
+
+		for _, wt := range worktrees {
+			wtPath := wt.Path
+			if !filepath.IsAbs(wtPath) {
+				wtPath = filepath.Join(svcPathAbs, wtPath)
+			}
+			wtPathAbs, err := normalizeAbsolutePath(wtPath, "")
+			if err != nil || existingPaths[wtPathAbs] {
+				continue
+			}
+
+			if projectPathAbs != "" {
+				relPath, _ := filepath.Rel(projectPathAbs, wtPathAbs)
+				discovered = append(discovered, discoveredService{
+					name:    wt.Name,
+					path:    relPath,
+					command: wt.Command,
+				})
 			}
 		}
 	}
