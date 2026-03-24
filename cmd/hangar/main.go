@@ -236,7 +236,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.serviceRuntime = msg.runtime
-		m.errMsg = ""
 		m.reconcileServiceTransitions(project, msg.runtime)
 		m.pruneServiceOwners(project, msg.runtime)
 		m.syncSelectionState()
@@ -319,7 +318,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if owner, ok := m.serviceOwners[msg.serviceKey]; ok && owner != 0 && !runtimeContainsPID(msg.runtime, owner) {
 			delete(m.serviceOwners, msg.serviceKey)
 		}
-		m.errMsg = ""
 		m.syncSelectionState()
 		return m, nil
 
@@ -442,6 +440,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+
+		m.errMsg = ""
 
 		switch k {
 		case "q":
@@ -860,6 +860,7 @@ func (m *model) toggleProject(project Project) tea.Cmd {
 		return nil
 	}
 
+	activeServices := 0
 	shouldStop := false
 	for i, service := range project.Services {
 		if !m.serviceRuntime[i].known {
@@ -874,9 +875,15 @@ func (m *model) toggleProject(project Project) tea.Cmd {
 		if service.Ignored {
 			continue
 		}
+		activeServices++
 		if m.serviceRuntime[i].running {
 			shouldStop = true
 		}
+	}
+
+	if activeServices == 0 {
+		m.errMsg = "All services in this project are ignored."
+		return nil
 	}
 
 	cmds := make([]tea.Cmd, 0, len(project.Services))
@@ -1371,14 +1378,30 @@ func (m model) View() string {
 func (m model) viewMain() string {
 	gap := 1
 
-	// Reserve 1 row for the status/error bar at the bottom when there's a message.
-	contentH := m.height
-	statusBar := ""
+	// Always reserve 1 row for the bottom bar.
+	contentH := max(0, m.height-1)
+
+	barBg := colorBorder // matches pane border color
+	const barPad = 1    // horizontal padding on each side of both segments
+	hint := "q quit  ? help"
+	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Padding(0, barPad)
+	errStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Bold(true)
+
+	leftContent := ""
 	if m.errMsg != "" {
-		contentH = max(0, m.height-1)
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true).Width(m.width)
-		statusBar = "\n" + errStyle.Render("⚠ "+m.errMsg)
+		leftContent = errStyle.Render("⚠ " + m.errMsg)
 	}
+
+	hintRendered := hintStyle.Render(hint)
+	hintWidth := lipgloss.Width(hintRendered)
+	leftWidth := m.width - hintWidth
+	if leftWidth < 0 {
+		leftWidth = 0
+	}
+	// Truncate error text accounting for left padding; bar stays exactly one row.
+	leftContent = ansi.Truncate(leftContent, max(0, leftWidth-barPad), "…")
+	leftStyle := lipgloss.NewStyle().Width(leftWidth).MaxHeight(1).Background(barBg).PaddingLeft(barPad)
+	statusBar := "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftContent), hintRendered)
 
 	rightVisible := m.details.visible || m.logs.visible
 
