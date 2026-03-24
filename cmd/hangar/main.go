@@ -410,6 +410,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 
+	case serviceReorderedMsg:
+		m.cfg = msg.cfg
+		m.invalidateRuntimeRefresh(false)
+		m.serviceRuntime = nil
+		m.syncSelectionState()
+		m.errMsg = ""
+		// Move cursor to the moved service's new position
+		if msg.projectIndex == m.projects.selected {
+			for i, row := range m.serviceDisplayRows {
+				if row.kind == serviceRowService && row.serviceIndex == msg.newServiceIdx {
+					m.services.selected = i
+					break
+				}
+			}
+		}
+		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
+
 	case serviceUpdatedMsg:
 		oldKey := serviceKey(msg.previousProject, msg.previousService)
 		m.cfg = msg.cfg
@@ -1019,9 +1036,7 @@ func (m *model) moveSelectedServiceUp() tea.Cmd {
 		return nil
 	}
 
-	// Swap with the service above in the group
-	swapRow := groupServiceRows[posInGroup-1]
-	return swapServicesCmd(m.projects.selected, svcIdx, swapRow.serviceIndex)
+	return reorderServiceUpCmd(m.projects.selected, svcIdx)
 }
 
 func (m *model) moveSelectedServiceDown() tea.Cmd {
@@ -1059,9 +1074,7 @@ func (m *model) moveSelectedServiceDown() tea.Cmd {
 		return nil
 	}
 
-	// Swap with the service below in the group
-	swapRow := groupServiceRows[posInGroup+1]
-	return swapServicesCmd(m.projects.selected, svcIdx, swapRow.serviceIndex)
+	return reorderServiceDownCmd(m.projects.selected, svcIdx)
 }
 
 func (m *model) toggleServiceGroup(project Project, header serviceDisplayRow) tea.Cmd {
@@ -1655,12 +1668,50 @@ func (m *model) moveSelection(delta int) {
 	case paneProjects:
 		m.projects.selected = clamp(m.projects.selected+delta, 0, len(m.projects.items)-1)
 	case paneServices:
-		m.services.selected = clamp(m.services.selected+delta, 0, len(m.services.items)-1)
+		m.services.selected = m.moveServicesSelection(delta)
 	case paneDetails:
 		m.details.selected = clamp(m.details.selected+delta, 0, len(m.details.items)-1)
 	case paneLogs:
 		m.logs.selected = clamp(m.logs.selected+delta, 0, len(m.logs.items)-1)
 	}
+}
+
+func (m *model) moveServicesSelection(delta int) int {
+	items := m.services.items
+	if len(items) == 0 {
+		return 0
+	}
+
+	newIdx := m.services.selected + delta
+	if newIdx < 0 {
+		return 0
+	}
+	if newIdx >= len(items) {
+		return len(items) - 1
+	}
+
+	// Skip over separators
+	if items[newIdx] == "─" {
+		if delta > 0 {
+			// Moving down - skip past all consecutive separators
+			for newIdx < len(items) && items[newIdx] == "─" {
+				newIdx++
+			}
+			if newIdx >= len(items) {
+				newIdx = len(items) - 1
+			}
+		} else {
+			// Moving up - skip past all consecutive separators
+			for newIdx >= 0 && items[newIdx] == "─" {
+				newIdx--
+			}
+			if newIdx < 0 {
+				newIdx = 0
+			}
+		}
+	}
+
+	return clamp(newIdx, 0, len(items)-1)
 }
 
 func clamp(v, lo, hi int) int {
@@ -1922,10 +1973,13 @@ func paneRows(p listPane, innerW int, focused bool, highlightSel bool, wrap bool
 	separatorStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#777777"))
 
+	// Create a full-width separator string
+	fullSeparator := strings.Repeat("─", max(0, innerW))
+
 	for i, it := range p.items {
 		// Handle separator specially - render full-width line with 70% opacity
 		if it == "─" {
-			sep := separatorStyle.Width(innerW).Render("─")
+			sep := separatorStyle.Render(fullSeparator)
 			lines = append(lines, sep)
 			continue
 		}
