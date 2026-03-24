@@ -509,7 +509,6 @@ var (
 	modalBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.DoubleBorder()).
 				BorderForeground(colorBorderFocused).
-				Background(lipgloss.Color("#30363d")).
 				Foreground(lipgloss.Color("#c9d1d9")).
 				Padding(1, 2)
 
@@ -519,14 +518,16 @@ var (
 
 	fieldActiveStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#ffffff")).
-				Background(lipgloss.Color("#238636"))
+				Background(lipgloss.Color("#238636")).
+				Width(55)
 
 	fieldInactiveStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#c9d1d9")).
-				Background(lipgloss.Color("#21262d"))
+				Width(55)
 
 	fieldMutedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6e7681"))
+			Foreground(lipgloss.Color("#6e7681")).
+			Width(55)
 
 	fieldRequiredMark = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Render(" *")
 
