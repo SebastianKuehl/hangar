@@ -137,12 +137,14 @@ func (f *formField) selectedOption() string {
 
 // formModal tracks all state for the project / service overlay.
 type formModal struct {
-	mode        modalMode
-	fields      []formField
-	activeField int
-	errMsg      string
-	project     Project
-	projectName string
+	mode            modalMode
+	fields          []formField
+	activeField     int
+	errMsg          string
+	project         Project
+	projectName     string
+	pathSuggestions []string
+	pathIndex       int
 }
 
 // isOpen reports whether any modal is currently visible.
@@ -183,6 +185,7 @@ func (f *formModal) openEditProject(project Project) {
 // openCreateService resets the modal for service creation within a project.
 func (f *formModal) openCreateService(project Project, cfg Config) {
 	suggestions := discoverAvailableServices(project, cfg)
+	pathSuggestions := discoverSubdirectories(project.Path, "")
 
 	fields := []formField{
 		{label: "Service name", required: true},
@@ -195,10 +198,12 @@ func (f *formModal) openCreateService(project Project, cfg Config) {
 	}
 
 	*f = formModal{
-		mode:        modalCreateService,
-		project:     project,
-		projectName: project.Name,
-		fields:      fields,
+		mode:            modalCreateService,
+		project:         project,
+		projectName:     project.Name,
+		fields:          fields,
+		pathSuggestions: pathSuggestions,
+		pathIndex:       0,
 	}
 	f.syncServiceCommandField("")
 }
@@ -293,6 +298,25 @@ func (f *formModal) applySuggestion() {
 	f.syncServiceCommandField(parts[2])
 }
 
+func (f *formModal) updatePathSuggestions(filter string) {
+	if f.project.Path == "" {
+		f.pathSuggestions = nil
+		return
+	}
+	f.pathSuggestions = discoverSubdirectories(f.project.Path, filter)
+	f.pathIndex = 0
+}
+
+func (f *formModal) selectPathSuggestion() {
+	if f.activeField != 1 || len(f.pathSuggestions) == 0 || f.pathIndex >= len(f.pathSuggestions) {
+		return
+	}
+	f.fields[1].value = f.pathSuggestions[f.pathIndex]
+	f.pathSuggestions = nil
+	f.pathIndex = 0
+	f.syncServiceCommandField("")
+}
+
 // close dismisses the modal without submitting.
 func (f *formModal) close() {
 	f.mode = modalNone
@@ -303,9 +327,20 @@ func (f *formModal) close() {
 func (f *formModal) handleKey(k string) (submit bool, close bool) {
 	switch k {
 	case "esc":
+		if len(f.pathSuggestions) > 0 {
+			f.pathSuggestions = nil
+			f.pathIndex = 0
+			return false, false
+		}
 		return false, true
 	case "tab", "down":
 		f.errMsg = ""
+		if f.activeField == 1 && len(f.pathSuggestions) > 0 {
+			if f.pathIndex < len(f.pathSuggestions)-1 {
+				f.pathIndex++
+				return false, false
+			}
+		}
 		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex < len(f.fields[f.activeField].options)-1 {
 			f.fields[f.activeField].cycleOption(1)
 			if f.isServiceMode() && f.activeField == 3 {
@@ -316,6 +351,12 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		f.activeField = (f.activeField + 1) % len(f.fields)
 	case "shift+tab", "up":
 		f.errMsg = ""
+		if f.activeField == 1 && len(f.pathSuggestions) > 0 {
+			if f.pathIndex > 0 {
+				f.pathIndex--
+				return false, false
+			}
+		}
 		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex > 0 {
 			f.fields[f.activeField].cycleOption(-1)
 			if f.isServiceMode() && f.activeField == 3 {
@@ -341,6 +382,10 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 			}
 		}
 	case "enter":
+		if f.activeField == 1 && len(f.pathSuggestions) > 0 {
+			f.selectPathSuggestion()
+			return false, false
+		}
 		if f.activeField < len(f.fields)-1 {
 			f.activeField++
 			return false, false
@@ -355,11 +400,16 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 	case "backspace":
 		cur := &f.fields[f.activeField]
 		if cur.kind != fieldText || len(cur.value) == 0 {
+			if f.activeField == 1 && len(f.pathSuggestions) > 0 {
+				f.pathSuggestions = nil
+				f.pathIndex = 0
+			}
 			return false, false
 		}
 		runes := []rune(cur.value)
 		cur.value = string(runes[:len(runes)-1])
 		if f.isServiceMode() && f.activeField == 1 {
+			f.updatePathSuggestions(cur.value)
 			f.syncServiceCommandField("")
 		}
 	default:
@@ -367,6 +417,7 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		if cur.kind == fieldText && utf8.RuneCountInString(k) == 1 {
 			cur.value += k
 			if f.isServiceMode() && f.activeField == 1 {
+				f.updatePathSuggestions(cur.value)
 				f.syncServiceCommandField("")
 			}
 		}
@@ -520,15 +571,33 @@ func (m model) renderModal(screenW, screenH int) string {
 			style = fieldActiveStyle
 		}
 		lines = append(lines, style.Render(display), "")
+
+		if i == 1 && len(f.pathSuggestions) > 0 {
+			for pathIdx, path := range f.pathSuggestions {
+				marker := "○ "
+				if pathIdx == f.pathIndex {
+					marker = "◉ "
+				}
+				display := ansi.Truncate(marker+path, 35, "…")
+				pathStyle := fieldInactiveStyle
+				if f.activeField == 1 && pathIdx == f.pathIndex {
+					pathStyle = fieldActiveStyle
+				}
+				lines = append(lines, pathStyle.Render(display))
+			}
+			lines = append(lines, "")
+		}
 	}
 
 	if f.errMsg != "" {
 		lines = append(lines, modalErrStyle.Render(f.errMsg), "")
 	}
 
-	lines = append(lines,
-		modalHintStyle.Render("tab/↑↓ switch field  •  j/k or ←/→ choose option  •  enter submit  •  esc cancel"),
-	)
+	hint := "tab/enter next field  •  ↑↓ navigate  •  enter submit  •  esc cancel"
+	if f.activeField == 1 && len(f.pathSuggestions) > 0 {
+		hint = "↑↓ select path  •  enter confirm  •  esc clear"
+	}
+	lines = append(lines, modalHintStyle.Render(hint))
 
 	body := strings.Join(lines, "\n")
 	box := modalBorderStyle.Render(body)

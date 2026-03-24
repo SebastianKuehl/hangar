@@ -376,7 +376,7 @@ func newModel() model {
 		focus:           paneProjects,
 		serviceStates:   map[string]serviceTransition{},
 		serviceOwners:   map[string]int32{},
-		projects:        listPane{title: "Projects", visible: true, items: projectItems(cfg)},
+		projects:        listPane{title: "Projects", visible: false, items: projectItems(cfg)},
 		services:        listPane{title: "Services", visible: true},
 		details:         listPane{title: "Details", visible: true, placeholder: "Select a service to inspect its runtime state."},
 		logs:            listPane{title: "Logs", visible: true, placeholder: "Select a service to inspect its runtime state."},

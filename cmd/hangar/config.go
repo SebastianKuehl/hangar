@@ -1110,6 +1110,64 @@ func discoverProjectsFromBasePath(basePath string) ([]Service, error) {
 	return discoverServices(projectPath)
 }
 
+func discoverSubdirectories(basePath, filter string) []string {
+	if strings.TrimSpace(basePath) == "" {
+		return nil
+	}
+
+	absPath, err := normalizeAbsolutePath(basePath, "")
+	if err != nil {
+		return nil
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+
+	var dirs []string
+	filter = strings.ToLower(filter)
+
+	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if !d.IsDir() {
+			return nil
+		}
+
+		switch d.Name() {
+		case ".git", "node_modules", ".gradle", "build", "target":
+			if path != absPath {
+				return filepath.SkipDir
+			}
+		}
+
+		if path == absPath {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(absPath, path)
+		if err != nil {
+			return nil
+		}
+
+		if filter == "" || strings.Contains(strings.ToLower(relPath), filter) {
+			dirs = append(dirs, relPath)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil
+	}
+
+	sort.Strings(dirs)
+	return dirs
+}
+
 func discoverAvailableServices(project Project, cfg Config) []string {
 	existingPaths := make(map[string]bool)
 	for _, svc := range project.Services {
