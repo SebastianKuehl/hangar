@@ -31,6 +31,7 @@ type Project struct {
 // Config is the root structure persisted to projects.yaml.
 type Config struct {
 	Projects []Project `yaml:"projects"`
+	BasePath string    `yaml:"basePath,omitempty"`
 }
 
 // configPath returns the OS-appropriate path to projects.yaml.
@@ -127,6 +128,21 @@ func addProject(name, path string) (Config, error) {
 	}
 
 	cfg.Projects = append(cfg.Projects, project)
+	return cfg, saveConfig(cfg)
+}
+
+func setBasePath(basePath string) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+
+	normalizedPath, err := normalizeAbsolutePath(basePath, "")
+	if err != nil {
+		return cfg, err
+	}
+
+	cfg.BasePath = normalizedPath
 	return cfg, saveConfig(cfg)
 }
 
@@ -613,4 +629,102 @@ func replaceFileWindows(tmpName, path string) error {
 
 func loadConfigBackup(path string) ([]byte, error) {
 	return os.ReadFile(path + ".bak")
+}
+
+func discoverProjectsFromBasePath(basePath string) ([]Service, error) {
+	if strings.TrimSpace(basePath) == "" {
+		return nil, nil
+	}
+
+	projectPath, err := normalizeAbsolutePath(basePath, "")
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(projectPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+
+	return discoverServices(projectPath)
+}
+
+func discoverAvailableServices(project Project, cfg Config) []string {
+	existingPaths := make(map[string]bool)
+	for _, svc := range project.Services {
+		svcPath := svc.Path
+		if !filepath.IsAbs(svcPath) {
+			svcPath = filepath.Join(project.Path, svcPath)
+		}
+		existingPaths[svcPath] = true
+	}
+
+	type discoveredService struct {
+		name    string
+		path    string
+		command string
+	}
+	var discovered []discoveredService
+
+	if project.Path != "" {
+		projectPathAbs, err := normalizeAbsolutePath(project.Path, "")
+		if err == nil {
+			services, err := discoverServices(project.Path)
+			if err == nil {
+				for _, svc := range services {
+					svcPath := svc.Path
+					if !filepath.IsAbs(svcPath) {
+						svcPath = filepath.Join(project.Path, svcPath)
+					}
+					svcPathAbs, err2 := normalizeAbsolutePath(svcPath, "")
+					if err2 == nil && !existingPaths[svcPathAbs] {
+						relPath, _ := filepath.Rel(projectPathAbs, svcPathAbs)
+						discovered = append(discovered, discoveredService{
+							name:    svc.Name,
+							path:    relPath,
+							command: svc.Command,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if cfg.BasePath != "" && project.Path != "" {
+		projectPathAbs, err2 := normalizeAbsolutePath(project.Path, "")
+		if err2 == nil {
+			services, err := discoverProjectsFromBasePath(cfg.BasePath)
+			if err == nil {
+				for _, svc := range services {
+					svcPath := svc.Path
+					if !filepath.IsAbs(svcPath) {
+						svcPath = filepath.Join(cfg.BasePath, svcPath)
+					}
+					svcPathAbs, err3 := normalizeAbsolutePath(svcPath, "")
+					if err3 == nil && !existingPaths[svcPathAbs] {
+						relPath, _ := filepath.Rel(projectPathAbs, svcPathAbs)
+						discovered = append(discovered, discoveredService{
+							name:    svc.Name,
+							path:    relPath,
+							command: svc.Command,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	var suggestions []string
+	for _, svc := range discovered {
+		suggestions = append(suggestions, svc.name+" | "+svc.path+" | "+svc.command)
+	}
+
+	sort.Strings(suggestions)
+	return suggestions
 }
