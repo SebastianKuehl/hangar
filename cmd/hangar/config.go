@@ -15,10 +15,12 @@ import (
 
 // Service is a single runnable unit that belongs to a project.
 type Service struct {
-	Name    string `yaml:"name"`
-	Path    string `yaml:"path,omitempty"`
-	Command string `yaml:"command,omitempty"`
-	Ignored bool   `yaml:"ignored,omitempty"`
+	Name        string `yaml:"name"`
+	Path        string `yaml:"path,omitempty"`
+	Command     string `yaml:"command,omitempty"`
+	Runtime     string `yaml:"runtime,omitempty"`      // "node", "bun", "gradle", "docker-compose"
+	ComposeFile string `yaml:"compose_file,omitempty"` // relative path to the docker-compose file (docker-compose services only)
+	Ignored     bool   `yaml:"ignored,omitempty"`
 }
 
 // Project groups a set of services under a named entry.
@@ -233,6 +235,63 @@ func deleteService(projectIndex, serviceIndex int) (Config, error) {
 	return cfg, saveConfig(cfg)
 }
 
+// moveServiceUp moves the service at serviceIndex up within its runtime group.
+func moveServiceUp(projectIndex, serviceIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range", projectIndex)
+	}
+	services := cfg.Projects[projectIndex].Services
+	if serviceIndex < 1 || serviceIndex >= len(services) {
+		return cfg, fmt.Errorf("cannot move service at index %d", serviceIndex)
+	}
+	if effectiveGroupKey(services[serviceIndex]) != effectiveGroupKey(services[serviceIndex-1]) {
+		return cfg, fmt.Errorf("cannot move service across runtime groups")
+	}
+	services[serviceIndex-1], services[serviceIndex] = services[serviceIndex], services[serviceIndex-1]
+	return cfg, saveConfig(cfg)
+}
+
+// moveServiceDown moves the service at serviceIndex down within its runtime group.
+func moveServiceDown(projectIndex, serviceIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range", projectIndex)
+	}
+	services := cfg.Projects[projectIndex].Services
+	if serviceIndex < 0 || serviceIndex >= len(services)-1 {
+		return cfg, fmt.Errorf("cannot move service at index %d", serviceIndex)
+	}
+	if effectiveGroupKey(services[serviceIndex]) != effectiveGroupKey(services[serviceIndex+1]) {
+		return cfg, fmt.Errorf("cannot move service across runtime groups")
+	}
+	services[serviceIndex], services[serviceIndex+1] = services[serviceIndex+1], services[serviceIndex]
+	return cfg, saveConfig(cfg)
+}
+
+// swapServices swaps two services at the given indices in a project.
+func swapServices(projectIndex, idxA, idxB int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range", projectIndex)
+	}
+	services := cfg.Projects[projectIndex].Services
+	if idxA < 0 || idxA >= len(services) || idxB < 0 || idxB >= len(services) {
+		return cfg, fmt.Errorf("service index out of range")
+	}
+	services[idxA], services[idxB] = services[idxB], services[idxA]
+	return cfg, saveConfig(cfg)
+}
+
 // toggleServiceIgnored flips the Ignored flag for a service and persists.
 func toggleServiceIgnored(projectIndex, serviceIndex int) (Config, error) {
 	cfg, err := loadConfig()
@@ -273,10 +332,12 @@ func updateService(projectIndex, serviceIndex int, name, path, command string, i
 	}
 
 	cfg.Projects[projectIndex].Services[serviceIndex] = Service{
-		Name:    strings.TrimSpace(name),
-		Path:    normalizedPath,
-		Command: command,
-		Ignored: ignored,
+		Name:        strings.TrimSpace(name),
+		Path:        normalizedPath,
+		Command:     command,
+		Runtime:     cfg.Projects[projectIndex].Services[serviceIndex].Runtime,
+		ComposeFile: cfg.Projects[projectIndex].Services[serviceIndex].ComposeFile,
+		Ignored:     ignored,
 	}
 	return cfg, saveConfig(cfg)
 }
@@ -435,11 +496,27 @@ func discoverServices(projectPath string) ([]Service, error) {
 		return nil, err
 	}
 
+	gradleServices, err := discoverGradleServices(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	services = append(services, gradleServices...)
+
+	composeServices, err := discoverDockerComposeServices(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	services = append(services, composeServices...)
+
 	sort.Slice(services, func(i, j int) bool {
-		if services[i].Path == services[j].Path {
-			return services[i].Name < services[j].Name
+		si, sj := services[i], services[j]
+		if si.Path != sj.Path {
+			return si.Path < sj.Path
 		}
-		return services[i].Path < services[j].Path
+		if si.ComposeFile != sj.ComposeFile {
+			return si.ComposeFile < sj.ComposeFile
+		}
+		return si.Name < sj.Name
 	})
 	return services, nil
 }
@@ -471,10 +548,12 @@ func serviceFromPackageManifest(projectPath, manifestPath string) (Service, bool
 		serviceName = filepath.Base(serviceDir)
 	}
 
+	rt := detectRuntime(serviceDir, manifest)
 	return Service{
 		Name:    serviceName,
 		Path:    filepath.Clean(relativePath),
-		Command: startCommand(detectRuntime(serviceDir, manifest)),
+		Command: startCommand(rt),
+		Runtime: rt,
 	}, true, nil
 }
 
@@ -491,8 +570,189 @@ func detectRuntime(serviceDir string, manifest packageManifest) string {
 	return "node"
 }
 
-func startCommand(runtime string) string {
-	if runtime == "bun" {
+// discoverGradleServices finds build.gradle / build.gradle.kts files and
+// creates a service entry for each.  It skips standard Gradle output dirs.
+func discoverGradleServices(projectPath string) ([]Service, error) {
+	var services []Service
+	err := filepath.WalkDir(projectPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules", ".gradle", "build", "target":
+				if path != projectPath {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if d.Name() != "build.gradle" && d.Name() != "build.gradle.kts" {
+			return nil
+		}
+		service, err := serviceFromGradleBuild(projectPath, path)
+		if err != nil {
+			return err
+		}
+		services = append(services, service)
+		return nil
+	})
+	return services, err
+}
+
+func serviceFromGradleBuild(projectPath, buildFile string) (Service, error) {
+	serviceDir := filepath.Dir(buildFile)
+	relativePath, err := filepath.Rel(projectPath, serviceDir)
+	if err != nil {
+		return Service{}, err
+	}
+	relativePath = filepath.Clean(relativePath)
+
+	serviceName := filepath.Base(serviceDir)
+	if relativePath == "." {
+		serviceName = filepath.Base(projectPath)
+	}
+
+	executable := gradleExecutable(serviceDir, projectPath)
+	return Service{
+		Name:    serviceName,
+		Path:    relativePath,
+		Command: executable + " run",
+		Runtime: "gradle",
+	}, nil
+}
+
+// gradleExecutable walks up from serviceDir to projectPath looking for a
+// gradlew (or gradlew.bat on Windows) and returns a path relative to
+// serviceDir.  Falls back to "gradle" if none is found.
+func gradleExecutable(serviceDir, projectPath string) string {
+	execName := "gradlew"
+	if runtime.GOOS == "windows" {
+		execName = "gradlew.bat"
+	}
+	dir := serviceDir
+	for {
+		candidate := filepath.Join(dir, execName)
+		if _, err := os.Stat(candidate); err == nil {
+			rel, err := filepath.Rel(serviceDir, candidate)
+			if err == nil {
+				return filepath.ToSlash(rel)
+			}
+		}
+		if dir == projectPath {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "gradle"
+}
+
+// dockerComposeSpec is used to parse the top-level services map from a
+// docker-compose file.
+type dockerComposeSpec struct {
+	Services map[string]any `yaml:"services"`
+}
+
+// discoverDockerComposeServices finds docker-compose files under projectPath
+// and creates one service entry per container service.
+func discoverDockerComposeServices(projectPath string) ([]Service, error) {
+	var services []Service
+	err := filepath.WalkDir(projectPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "node_modules" {
+				if path != projectPath {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !isDockerComposeFile(d.Name()) {
+			return nil
+		}
+		discovered, err := servicesFromComposeFile(projectPath, path)
+		if err != nil {
+			return nil // skip malformed compose files
+		}
+		services = append(services, discovered...)
+		return nil
+	})
+	return services, err
+}
+
+// shellQuote wraps s in single quotes for safe use in sh -lc commands,
+// escaping any embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func isDockerComposeFile(name string) bool {
+	// Accept docker-compose*.yml/yaml and compose*.yml/yaml to handle variants
+	// like docker-compose.dev.yml, docker-compose.prod.yaml, etc.
+	for _, prefix := range []string{"docker-compose", "compose"} {
+		if strings.HasPrefix(name, prefix) &&
+			(strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml")) {
+			return true
+		}
+	}
+	return false
+}
+
+func servicesFromComposeFile(projectPath, composePath string) ([]Service, error) {
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var spec dockerComposeSpec
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		return nil, err
+	}
+	if len(spec.Services) == 0 {
+		return nil, nil
+	}
+
+	composeDir := filepath.Dir(composePath)
+	relPath, err := filepath.Rel(projectPath, composeDir)
+	if err != nil {
+		return nil, err
+	}
+	relPath = filepath.Clean(relPath)
+
+	composeFilename := filepath.Base(composePath)
+	relComposePath, err := filepath.Rel(projectPath, composePath)
+	if err != nil {
+		return nil, err
+	}
+	relComposePath = filepath.ToSlash(filepath.Clean(relComposePath))
+
+	names := make([]string, 0, len(spec.Services))
+	for name := range spec.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var result []Service
+	for _, name := range names {
+		result = append(result, Service{
+			Name:        name,
+			Path:        relPath,
+			Command:     "docker compose -f " + shellQuote(composeFilename) + " up " + shellQuote(name),
+			Runtime:     "docker-compose",
+			ComposeFile: relComposePath,
+		})
+	}
+	return result, nil
+}
+
+func startCommand(rt string) string {
+	if rt == "bun" {
 		return "bun run start"
 	}
 	return "npm run start"

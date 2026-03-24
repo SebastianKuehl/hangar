@@ -28,6 +28,7 @@ type ServiceConfig struct {
 	Name        string
 	Path        string
 	Command     string
+	ComposeFile string // non-empty for docker-compose services; used to disambiguate same-named services across files
 }
 
 type ServiceRuntime struct {
@@ -368,7 +369,7 @@ func serviceSlug(svc ServiceConfig) string {
 	if prefix == "" {
 		prefix = "service"
 	}
-	hashInput := strings.Join([]string{svc.ProjectPath, svc.Path, svc.Name, svc.ProjectName}, "\x00")
+	hashInput := strings.Join([]string{svc.ProjectPath, svc.Path, svc.Name, svc.ProjectName, svc.ComposeFile}, "\x00")
 	digest := sha1.Sum([]byte(hashInput))
 	return prefix + "-" + hex.EncodeToString(digest[:4])
 }

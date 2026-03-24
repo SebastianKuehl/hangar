@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,6 +67,7 @@ type model struct {
 	logs     listPane
 
 	cfg                   Config
+	serviceDisplayRows    []serviceDisplayRow
 	serviceRuntime        []serviceRuntime
 	serviceStates         map[string]serviceTransition
 	serviceOwners         map[string]int32
@@ -108,14 +111,237 @@ func projectItems(cfg Config) []string {
 	return out
 }
 
+// serviceRowKind distinguishes group-header rows, separator rows, and actual service rows
+// in the services pane display list.
+type serviceRowKind int
+
+const (
+	serviceRowService     serviceRowKind = iota
+	serviceRowGroupHeader serviceRowKind = iota
+	serviceRowSeparator   serviceRowKind = iota
+)
+
+// serviceDisplayRow is one entry in the flattened services pane list.  It is
+// either a runtime group header or a reference to an individual service.
+type serviceDisplayRow struct {
+	kind         serviceRowKind
+	serviceIndex int    // index into project.Services (-1 for group headers)
+	runtime      string // effective runtime
+	groupLabel   string // display label for group header rows
+	composeFile  string // non-empty only for docker-compose group headers
+}
+
+// effectiveRuntime returns the runtime identifier for a service, inferring it
+// from the command when the Runtime field is empty (backward compat).
+func effectiveRuntime(s Service) string {
+	if s.Runtime != "" {
+		return s.Runtime
+	}
+	cmd := strings.TrimSpace(s.Command)
+	switch {
+	case strings.HasPrefix(cmd, "bun "):
+		return "bun"
+	case strings.HasPrefix(cmd, "npm "), strings.HasPrefix(cmd, "npx "):
+		return "node"
+	case strings.HasPrefix(cmd, "./gradlew "), strings.HasPrefix(cmd, "gradlew "), strings.HasPrefix(cmd, "gradle "):
+		return "gradle"
+	case strings.HasPrefix(cmd, "docker compose "), strings.HasPrefix(cmd, "docker-compose "):
+		return "docker-compose"
+	default:
+		return "node"
+	}
+}
+
+// effectiveGroupKey returns the grouping key for a service.  Docker-compose
+// services are grouped per compose file; everything else is grouped by runtime.
+func effectiveGroupKey(s Service) string {
+	rt := effectiveRuntime(s)
+	if rt == "docker-compose" {
+		return "docker-compose:" + s.ComposeFile
+	}
+	return rt
+}
+
+// runtimeGroupPriority returns a sort priority for runtime groups.
+// Lower values appear first: node, bun, java, docker.
+func runtimeGroupPriority(gk string) int {
+	switch gk {
+	case "node":
+		return 0
+	case "bun":
+		return 1
+	case "gradle", "java":
+		return 2
+	default:
+		if strings.HasPrefix(gk, "docker-compose:") {
+			return 3
+		}
+		return 4
+	}
+}
+
+// runtimeGroupLabel returns the human-readable label for a runtime group.
+func runtimeGroupLabel(rt, composeFile string) string {
+	switch rt {
+	case "node":
+		return "Node"
+	case "bun":
+		return "Bun"
+	case "gradle":
+		return "JVM"
+	case "docker-compose":
+		if composeFile != "" {
+			return filepath.Base(composeFile)
+		}
+		return "Docker Compose"
+	default:
+		if rt != "" {
+			return strings.ToUpper(rt[:1]) + rt[1:]
+		}
+		return "Other"
+	}
+}
+
+// buildServiceDisplayRows produces the flat display row list for the services
+// pane.  When all services share the same runtime group, headers are omitted
+// to keep the UI clean.  Services are re-ordered so same-runtime services are
+// always contiguous under their group header.  Groups are sorted by fixed order:
+// node/bun, java/gradle, docker-compose.
+func buildServiceDisplayRows(project Project) []serviceDisplayRow {
+	if len(project.Services) == 0 {
+		return nil
+	}
+
+	// Build a map from group key to services in that group (preserving index).
+	type indexedService struct {
+		idx int
+		svc Service
+	}
+	byGroup := map[string][]indexedService{}
+	for i, s := range project.Services {
+		gk := effectiveGroupKey(s)
+		byGroup[gk] = append(byGroup[gk], indexedService{i, s})
+	}
+
+	// Determine unique groups and sort by fixed priority.
+	groupSet := map[string]bool{}
+	groupOrder := make([]string, 0, len(byGroup))
+	for gk := range byGroup {
+		groupSet[gk] = true
+	}
+	for gk := range groupSet {
+		groupOrder = append(groupOrder, gk)
+	}
+	sort.Slice(groupOrder, func(i, j int) bool {
+		if pi, pj := runtimeGroupPriority(groupOrder[i]), runtimeGroupPriority(groupOrder[j]); pi != pj {
+			return pi < pj
+		}
+		return groupOrder[i] < groupOrder[j]
+	})
+
+	showHeaders := len(groupOrder) > 1
+
+	rows := make([]serviceDisplayRow, 0, len(project.Services)+len(groupOrder)*2)
+	for gi, gk := range groupOrder {
+		if gi > 0 && showHeaders {
+			rows = append(rows, serviceDisplayRow{kind: serviceRowSeparator})
+		}
+		members := byGroup[gk]
+		if showHeaders {
+			rt := effectiveRuntime(members[0].svc)
+			cf := members[0].svc.ComposeFile
+			rows = append(rows, serviceDisplayRow{
+				kind:         serviceRowGroupHeader,
+				serviceIndex: -1,
+				runtime:      rt,
+				groupLabel:   runtimeGroupLabel(rt, cf),
+				composeFile:  cf,
+			})
+		}
+		for _, m := range members {
+			rows = append(rows, serviceDisplayRow{
+				kind:         serviceRowService,
+				serviceIndex: m.idx,
+				runtime:      effectiveRuntime(m.svc),
+				composeFile:  m.svc.ComposeFile,
+			})
+		}
+	}
+	return rows
+}
+
+// groupHeaderIcon returns the status icon for a group header row, reflecting
+// whether any service in the group is running or transitioning.
+func groupHeaderIcon(project Project, runtime []serviceRuntime, states map[string]serviceTransition, header serviceDisplayRow) string {
+	headerKey := effectiveGroupKey(Service{Runtime: header.runtime, ComposeFile: header.composeFile})
+
+	for i, s := range project.Services {
+		if effectiveGroupKey(s) != headerKey {
+			continue
+		}
+		if _, pending := states[serviceKey(project, s)]; pending {
+			return "◔"
+		}
+		if i < len(runtime) && runtime[i].known && runtime[i].running {
+			return "●"
+		}
+	}
+	return "○"
+}
+
+// groupHeaderDetails builds the details pane content when a group header row
+// is selected.
+func groupHeaderDetails(project Project, header serviceDisplayRow) []string {
+	headerKey := effectiveGroupKey(Service{Runtime: header.runtime, ComposeFile: header.composeFile})
+	count := 0
+	for _, s := range project.Services {
+		if effectiveGroupKey(s) == headerKey {
+			count++
+		}
+	}
+	return []string{
+		"Group: " + header.groupLabel,
+		fmt.Sprintf("Services: %d", count),
+		"Press s to start/stop all, r to restart all.",
+	}
+}
+
 // serviceItems returns the service names for a project with runtime icons.
 // loadingFrame is the current spinner frame index used for services whose
 // runtime status is not yet known.
-func serviceItems(project Project, runtime []serviceRuntime, states map[string]serviceTransition, loadingFrame int) []string {
-	out := make([]string, 0, len(project.Services))
-	for i, s := range project.Services {
+func serviceItems(project Project, runtime []serviceRuntime, states map[string]serviceTransition, loadingFrame int, displayRows []serviceDisplayRow) []string {
+	if len(displayRows) == 0 {
+		return nil
+	}
+
+	hasHeaders := false
+	for _, row := range displayRows {
+		if row.kind == serviceRowGroupHeader {
+			hasHeaders = true
+			break
+		}
+	}
+
+	out := make([]string, 0, len(displayRows))
+	for _, row := range displayRows {
+		switch row.kind {
+		case serviceRowSeparator:
+			out = append(out, "─")
+			continue
+		case serviceRowGroupHeader:
+			icon := groupHeaderIcon(project, runtime, states, row)
+			out = append(out, " "+icon+" "+row.groupLabel)
+			continue
+		}
+
+		i := row.serviceIndex
+		s := project.Services[i]
 		if s.Ignored {
-			out = append(out, " ⊘ "+s.Name)
+			indent := " "
+			if hasHeaders {
+				indent = "   "
+			}
+			out = append(out, indent+"⊘ "+s.Name)
 			continue
 		}
 		var icon string
@@ -130,7 +356,11 @@ func serviceItems(project Project, runtime []serviceRuntime, states map[string]s
 		} else {
 			icon = loadingFrames[loadingFrame%len(loadingFrames)]
 		}
-		out = append(out, " "+icon+" "+s.Name)
+		indent := " "
+		if hasHeaders {
+			indent = "   "
+		}
+		out = append(out, indent+icon+" "+s.Name)
 	}
 	return out
 }
@@ -186,6 +416,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceRuntime = nil
 		m.syncSelectionState()
 		m.errMsg = ""
+		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
+
+	case serviceReorderedMsg:
+		m.cfg = msg.cfg
+		m.invalidateRuntimeRefresh(false)
+		m.serviceRuntime = nil
+		m.syncSelectionState()
+		m.errMsg = ""
+		// Move cursor to the moved service's new position
+		if msg.projectIndex == m.projects.selected {
+			for i, row := range m.serviceDisplayRows {
+				if row.kind == serviceRowService && row.serviceIndex == msg.newServiceIdx {
+					m.services.selected = i
+					break
+				}
+			}
+		}
 		return m, tea.Batch(m.startRuntimeRefresh(), m.beginRuntimeLoading(), m.restartLogTail())
 
 	case serviceUpdatedMsg:
@@ -401,7 +648,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				command := m.modal.command()
 				mode := m.modal.mode
 				projectIndex := m.projects.selected
-				serviceIndex := m.services.selected
+				serviceIndex := m.selectedServiceIndex()
 				m.modal.close()
 				switch mode {
 				case modalCreateProject:
@@ -509,7 +756,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.confirm.open(confirmDeleteService,
 					"Delete service \""+service.Name+"\" from \""+project.Name+"\"?",
-					m.projects.selected, m.services.selected)
+					m.projects.selected, m.selectedServiceIndex())
 			}
 			return m, nil
 		case "d":
@@ -581,6 +828,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == paneServices {
 				m.invalidateRuntimeRefresh(false)
 				return m, tea.Batch(m.startRuntimeRefresh(), m.restartLogTail())
+			}
+			return m, nil
+		case "o":
+			if m.focus == paneServices {
+				return m, m.moveSelectedServiceUp()
+			}
+			return m, nil
+		case "O":
+			if m.focus == paneServices {
+				return m, m.moveSelectedServiceDown()
 			}
 			return m, nil
 		}
@@ -661,6 +918,7 @@ func (m *model) syncSelectionState() {
 	project, ok := m.selectedProject()
 	if !ok {
 		m.serviceRuntime = nil
+		m.serviceDisplayRows = nil
 		m.services.items = nil
 		m.services.selected = 0
 		m.details.placeholder = "Create a project and select a service to inspect it."
@@ -673,8 +931,21 @@ func (m *model) syncSelectionState() {
 	if len(m.serviceRuntime) != len(project.Services) {
 		m.serviceRuntime = make([]serviceRuntime, len(project.Services))
 	}
-	m.services.items = serviceItems(project, m.serviceRuntime, m.serviceStates, m.loadingFrame)
-	m.services.selected = clamp(m.services.selected, 0, len(project.Services)-1)
+	m.serviceDisplayRows = buildServiceDisplayRows(project)
+	m.services.items = serviceItems(project, m.serviceRuntime, m.serviceStates, m.loadingFrame, m.serviceDisplayRows)
+	m.services.selected = clamp(m.services.selected, 0, max(0, len(m.serviceDisplayRows)-1))
+
+	// When a group header is selected, show group summary instead of service details.
+	if m.services.selected >= 0 && m.services.selected < len(m.serviceDisplayRows) {
+		row := m.serviceDisplayRows[m.services.selected]
+		if row.kind == serviceRowGroupHeader {
+			m.details.placeholder = ""
+			m.details.items = groupHeaderDetails(project, row)
+			m.logs.placeholder = "Select a service to view its logs."
+			m.logs.items = []string{"(select a service to view its logs)"}
+			return
+		}
+	}
 
 	service, ok := m.selectedService()
 	if !ok {
@@ -710,6 +981,14 @@ func (m *model) startStopSelectedService() tea.Cmd {
 	if m.focus == paneProjects {
 		return m.toggleProject(project)
 	}
+	if m.focus == paneServices {
+		if m.services.selected >= 0 && m.services.selected < len(m.serviceDisplayRows) {
+			row := m.serviceDisplayRows[m.services.selected]
+			if row.kind == serviceRowGroupHeader {
+				return m.toggleServiceGroup(project, row)
+			}
+		}
+	}
 	service, ok := m.selectedService()
 	if !ok {
 		return nil
@@ -733,6 +1012,12 @@ func (m *model) restartSelectedService() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	if m.services.selected >= 0 && m.services.selected < len(m.serviceDisplayRows) {
+		row := m.serviceDisplayRows[m.services.selected]
+		if row.kind == serviceRowGroupHeader {
+			return m.restartServiceGroup(project, row)
+		}
+	}
 	service, ok := m.selectedService()
 	if !ok {
 		return nil
@@ -746,6 +1031,166 @@ func (m *model) restartSelectedService() tea.Cmd {
 		return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseRestartStopping)
 	}
 	return m.queueServiceAction(m.projects.selected, project, service, runtime, transitionPhaseStarting)
+}
+
+func (m *model) moveSelectedServiceUp() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	svcIdx := m.selectedServiceIndex()
+	if svcIdx < 0 {
+		return nil
+	}
+
+	// Find all service rows in the same group as the selected service
+	selectedKey := effectiveGroupKey(project.Services[svcIdx])
+
+	// Collect service rows from the same group in display order
+	var groupServiceRows []serviceDisplayRow
+	for _, row := range m.serviceDisplayRows {
+		if row.kind == serviceRowService && effectiveGroupKey(project.Services[row.serviceIndex]) == selectedKey {
+			groupServiceRows = append(groupServiceRows, row)
+		}
+	}
+
+	// Find position within group
+	posInGroup := -1
+	for i, row := range groupServiceRows {
+		if row.serviceIndex == svcIdx {
+			posInGroup = i
+			break
+		}
+	}
+
+	if posInGroup <= 0 {
+		m.errMsg = "Service is already at the top of its group."
+		return nil
+	}
+
+	return reorderServiceUpCmd(m.projects.selected, svcIdx)
+}
+
+func (m *model) moveSelectedServiceDown() tea.Cmd {
+	project, ok := m.selectedProject()
+	if !ok {
+		return nil
+	}
+	svcIdx := m.selectedServiceIndex()
+	if svcIdx < 0 {
+		return nil
+	}
+
+	// Find all service rows in the same group as the selected service
+	selectedKey := effectiveGroupKey(project.Services[svcIdx])
+
+	// Collect service rows from the same group in display order
+	var groupServiceRows []serviceDisplayRow
+	for _, row := range m.serviceDisplayRows {
+		if row.kind == serviceRowService && effectiveGroupKey(project.Services[row.serviceIndex]) == selectedKey {
+			groupServiceRows = append(groupServiceRows, row)
+		}
+	}
+
+	// Find position within group
+	posInGroup := -1
+	for i, row := range groupServiceRows {
+		if row.serviceIndex == svcIdx {
+			posInGroup = i
+			break
+		}
+	}
+
+	if posInGroup < 0 || posInGroup >= len(groupServiceRows)-1 {
+		m.errMsg = "Service is already at the bottom of its group."
+		return nil
+	}
+
+	return reorderServiceDownCmd(m.projects.selected, svcIdx)
+}
+
+func (m *model) toggleServiceGroup(project Project, header serviceDisplayRow) tea.Cmd {
+	headerKey := effectiveGroupKey(Service{Runtime: header.runtime, ComposeFile: header.composeFile})
+
+	// Collect services in this group and verify they're all ready.
+	var groupIdxs []int
+	for i, s := range project.Services {
+		if effectiveGroupKey(s) != headerKey {
+			continue
+		}
+		rt := m.runtimeForService(i)
+		if !rt.known {
+			m.errMsg = "Wait for runtime detection before toggling this group."
+			return nil
+		}
+		if _, busy := m.serviceStates[serviceKey(project, s)]; busy {
+			m.errMsg = "Wait for pending service transitions before toggling this group."
+			return nil
+		}
+		groupIdxs = append(groupIdxs, i)
+	}
+	if len(groupIdxs) == 0 {
+		return nil
+	}
+
+	shouldStop := false
+	for _, i := range groupIdxs {
+		if m.runtimeForService(i).running {
+			shouldStop = true
+			break
+		}
+	}
+
+	cmds := make([]tea.Cmd, 0, len(groupIdxs))
+	for _, i := range groupIdxs {
+		rt := m.runtimeForService(i)
+		s := project.Services[i]
+		if shouldStop && !rt.running {
+			continue
+		}
+		if !shouldStop && rt.running {
+			continue
+		}
+		phase := transitionPhaseStarting
+		if shouldStop {
+			phase = transitionPhaseStopping
+		}
+		if cmd := m.queueServiceAction(m.projects.selected, project, s, rt, phase); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *model) restartServiceGroup(project Project, header serviceDisplayRow) tea.Cmd {
+	headerKey := effectiveGroupKey(Service{Runtime: header.runtime, ComposeFile: header.composeFile})
+
+	cmds := make([]tea.Cmd, 0)
+	skippedUnknown := 0
+	for i, s := range project.Services {
+		if effectiveGroupKey(s) != headerKey {
+			continue
+		}
+		rt := m.runtimeForService(i)
+		if !rt.known {
+			skippedUnknown++
+			continue
+		}
+		if cmd := m.queueServiceAction(m.projects.selected, project, s, rt, transitionPhaseRestartStopping); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		if skippedUnknown > 0 {
+			m.errMsg = "Wait for runtime detection before restarting this group's services."
+		}
+		m.syncSelectionState()
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *model) restartSelectedProject() tea.Cmd {
@@ -838,17 +1283,35 @@ func serviceRuntimeChanged(prev, next Service) bool {
 
 func (m model) selectedService() (Service, bool) {
 	project, ok := m.selectedProject()
-	if !ok || m.services.selected < 0 || m.services.selected >= len(project.Services) {
+	if !ok {
 		return Service{}, false
 	}
-	return project.Services[m.services.selected], true
+	idx := m.selectedServiceIndex()
+	if idx < 0 || idx >= len(project.Services) {
+		return Service{}, false
+	}
+	return project.Services[idx], true
+}
+
+// selectedServiceIndex maps the current display row index to a project.Services
+// index.  Returns -1 when the selected row is a group header or out of range.
+func (m model) selectedServiceIndex() int {
+	if m.services.selected < 0 || m.services.selected >= len(m.serviceDisplayRows) {
+		return -1
+	}
+	row := m.serviceDisplayRows[m.services.selected]
+	if row.kind == serviceRowGroupHeader {
+		return -1
+	}
+	return row.serviceIndex
 }
 
 func (m model) selectedServiceRuntime() serviceRuntime {
-	if m.services.selected < 0 || m.services.selected >= len(m.serviceRuntime) {
+	idx := m.selectedServiceIndex()
+	if idx < 0 || idx >= len(m.serviceRuntime) {
 		return serviceRuntime{}
 	}
-	return m.serviceRuntime[m.services.selected]
+	return m.serviceRuntime[idx]
 }
 
 func (m *model) toggleProject(project Project) tea.Cmd {
@@ -972,8 +1435,9 @@ func (m *model) selectedLogPath() (string, string, bool) {
 		return "", "", false
 	}
 	key := serviceKey(project, service)
-	if m.services.selected >= 0 && m.services.selected < len(m.serviceRuntime) {
-		if path := m.serviceRuntime[m.services.selected].runtime.LogPath; path != "" {
+	serviceIdx := m.selectedServiceIndex()
+	if serviceIdx >= 0 && serviceIdx < len(m.serviceRuntime) {
+		if path := m.serviceRuntime[serviceIdx].runtime.LogPath; path != "" {
 			return key, path, true
 		}
 	}
@@ -1261,12 +1725,50 @@ func (m *model) moveSelection(delta int) {
 	case paneProjects:
 		m.projects.selected = clamp(m.projects.selected+delta, 0, len(m.projects.items)-1)
 	case paneServices:
-		m.services.selected = clamp(m.services.selected+delta, 0, len(m.services.items)-1)
+		m.services.selected = m.moveServicesSelection(delta)
 	case paneDetails:
 		m.details.selected = clamp(m.details.selected+delta, 0, len(m.details.items)-1)
 	case paneLogs:
 		m.logs.selected = clamp(m.logs.selected+delta, 0, len(m.logs.items)-1)
 	}
+}
+
+func (m *model) moveServicesSelection(delta int) int {
+	items := m.services.items
+	if len(items) == 0 {
+		return 0
+	}
+
+	newIdx := m.services.selected + delta
+	if newIdx < 0 {
+		return 0
+	}
+	if newIdx >= len(items) {
+		return len(items) - 1
+	}
+
+	// Skip over separators
+	if items[newIdx] == "─" {
+		if delta > 0 {
+			// Moving down - skip past all consecutive separators
+			for newIdx < len(items) && items[newIdx] == "─" {
+				newIdx++
+			}
+			if newIdx >= len(items) {
+				newIdx = len(items) - 1
+			}
+		} else {
+			// Moving up - skip past all consecutive separators
+			for newIdx >= 0 && items[newIdx] == "─" {
+				newIdx--
+			}
+			if newIdx < 0 {
+				newIdx = 0
+			}
+		}
+	}
+
+	return clamp(newIdx, 0, len(items)-1)
 }
 
 func clamp(v, lo, hi int) int {
@@ -1541,7 +2043,20 @@ func paneRows(p listPane, innerW int, focused bool, highlightSel bool, wrap bool
 	}
 
 	plainLine := lipgloss.NewStyle()
+	separatorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#777777"))
+
+	// Create a full-width separator string
+	fullSeparator := strings.Repeat("─", max(0, innerW))
+
 	for i, it := range p.items {
+		// Handle separator specially - render full-width line with 70% opacity
+		if it == "─" {
+			sep := separatorStyle.Render(fullSeparator)
+			lines = append(lines, sep)
+			continue
+		}
+
 		line := it
 		style := plainLine
 		if i == p.selected {
@@ -1645,6 +2160,7 @@ func (m model) renderHelpBox() string {
 			rows: [][2]string{
 				{"s", "Start / stop the selected project or service"},
 				{"r", "Restart selected service, or all services from Projects"},
+				{"o/O", "Move selected service up / down within its runtime group"},
 				{"i", "Toggle ignore for the selected service (ignored services are not auto-started)"},
 			},
 		},

@@ -680,6 +680,69 @@ func deleteServiceCmd(projectIndex, serviceIndex int) tea.Cmd {
 	}
 }
 
+// moveServiceUpCmd returns a tea.Cmd that moves a service up within its group.
+func moveServiceUpCmd(projectIndex, serviceIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := moveServiceUp(projectIndex, serviceIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+// moveServiceDownCmd returns a tea.Cmd that moves a service down within its group.
+func moveServiceDownCmd(projectIndex, serviceIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := moveServiceDown(projectIndex, serviceIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+// swapServicesCmd returns a tea.Cmd that swaps two services in a project.
+func swapServicesCmd(projectIndex, idxA, idxB int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := swapServices(projectIndex, idxA, idxB)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
+// serviceReorderedMsg is sent after a successful service reorder, carrying the
+// new services pane selection index so the cursor follows the moved service.
+type serviceReorderedMsg struct {
+	cfg           Config
+	projectIndex  int
+	newServiceIdx int // new index into project.Services for the moved service
+}
+
+// reorderServiceUpCmd returns a tea.Cmd that moves a service up and returns the new cursor position.
+func reorderServiceUpCmd(projectIndex, serviceIdx int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := swapServices(projectIndex, serviceIdx-1, serviceIdx)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return serviceReorderedMsg{cfg: cfg, projectIndex: projectIndex, newServiceIdx: serviceIdx - 1}
+	}
+}
+
+// reorderServiceDownCmd returns a tea.Cmd that moves a service down and returns the new cursor position.
+func reorderServiceDownCmd(projectIndex, serviceIdx int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := swapServices(projectIndex, serviceIdx, serviceIdx+1)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return serviceReorderedMsg{cfg: cfg, projectIndex: projectIndex, newServiceIdx: serviceIdx + 1}
+	}
+}
+
 // ---- confirm modal ------------------------------------------------------------
 
 // confirmAction identifies what action the confirm modal is confirming.
