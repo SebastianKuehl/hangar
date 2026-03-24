@@ -302,7 +302,24 @@ func (f *formModal) applySuggestion() {
 func (f *formModal) updatePathSuggestions(filter string) {
 	basePath := f.project.Path
 
-	if strings.HasPrefix(filter, "~") || strings.HasPrefix(filter, "/") {
+	if strings.HasPrefix(filter, "~") {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			if filter == "~" {
+				basePath = homeDir
+				filter = ""
+			} else {
+				absPath, err := normalizeAbsolutePath(filter, "")
+				if err == nil {
+					info, err := os.Stat(absPath)
+					if err == nil && info.IsDir() {
+						basePath = absPath
+						filter = ""
+					}
+				}
+			}
+		}
+	} else if strings.HasPrefix(filter, "/") {
 		absPath, err := normalizeAbsolutePath(filter, "")
 		if err == nil {
 			info, err := os.Stat(absPath)
@@ -335,6 +352,9 @@ func (f *formModal) selectPathSuggestion() {
 	f.pathSuggestions = nil
 	f.pathIndex = 0
 	f.syncServiceCommandField("")
+	if f.activeField < len(f.fields)-1 {
+		f.activeField++
+	}
 }
 
 // close dismisses the modal without submitting.

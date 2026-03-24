@@ -1129,7 +1129,7 @@ func discoverSubdirectories(basePath, filter string) []string {
 	}
 
 	var dirs []string
-	filter = strings.ToLower(filter)
+	filterLower := strings.ToLower(filter)
 
 	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -1160,7 +1160,30 @@ func discoverSubdirectories(basePath, filter string) []string {
 			return nil
 		}
 
-		if filter == "" || strings.Contains(strings.ToLower(relPath), filter) {
+		relPathLower := strings.ToLower(relPath)
+
+		matches := filterLower == ""
+		if !matches && strings.HasPrefix(relPathLower, filterLower) {
+			matches = true
+		}
+		if !matches {
+			filterParts := strings.Split(filterLower, string(filepath.Separator))
+			relPathParts := strings.Split(relPathLower, string(filepath.Separator))
+			if len(filterParts) > 0 && len(relPathParts) > 0 {
+				matches = true
+				for i, fp := range filterParts {
+					if fp == "" {
+						continue
+					}
+					if i >= len(relPathParts) || !strings.HasPrefix(relPathParts[i], fp) {
+						matches = false
+						break
+					}
+				}
+			}
+		}
+
+		if matches {
 			dirs = append(dirs, relPath)
 		}
 
