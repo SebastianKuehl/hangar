@@ -194,23 +194,6 @@ func TestAddServiceInfersCommand(t *testing.T) {
 	}
 }
 
-func TestAddServiceRequiresPathForPathlessProject(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("HOME", configHome)
-
-	if err := saveConfig(Config{
-		Projects: []Project{
-			{Name: "Distributed"},
-		},
-	}); err != nil {
-		t.Fatalf("saveConfig returned error: %v", err)
-	}
-
-	if _, err := addService(0, "web", "", ""); err == nil {
-		t.Fatal("expected addService to reject a blank service path for a pathless project")
-	}
-}
-
 func TestServiceCommandOptionsUseRuntimeScripts(t *testing.T) {
 	projectDir := t.TempDir()
 	writePackageJSON(t, filepath.Join(projectDir, "apps", "api", "package.json"), `{"name":"api","scripts":{"dev":"node dev.js","start":"node server.js","test":"vitest"}}`)

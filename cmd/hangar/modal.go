@@ -182,17 +182,11 @@ func (f *formModal) openEditProject(project Project) {
 
 // openCreateService resets the modal for service creation within a project.
 func (f *formModal) openCreateService(project Project, cfg Config) {
-	pathLabel := "Path (optional)"
-	pathRequired := strings.TrimSpace(project.Path) == ""
-	if pathRequired {
-		pathLabel = "Path"
-	}
-
 	suggestions := discoverAvailableServices(project, cfg)
 
 	fields := []formField{
 		{label: "Service name", required: true},
-		{label: pathLabel, required: pathRequired},
+		{label: "Path (optional)", required: false},
 		{kind: fieldText, label: "Command", required: true, value: ""},
 	}
 

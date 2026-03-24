@@ -184,9 +184,6 @@ func addService(projectIndex int, name, path, command string) (Config, error) {
 	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
 		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
 	}
-	if strings.TrimSpace(cfg.Projects[projectIndex].Path) == "" && strings.TrimSpace(path) == "" {
-		return cfg, fmt.Errorf("service path is required when the project has no path")
-	}
 
 	normalizedPath, err := normalizeServicePath(path, cfg.Projects[projectIndex].Path)
 	if err != nil {
@@ -194,7 +191,7 @@ func addService(projectIndex int, name, path, command string) (Config, error) {
 	}
 
 	serviceName := strings.TrimSpace(name)
-	if serviceName == "" || isWorktreePath(normalizedPath, cfg.Projects[projectIndex].Path) {
+	if normalizedPath != "" && (serviceName == "" || isWorktreePath(normalizedPath, cfg.Projects[projectIndex].Path)) {
 		worktreeName, repoPath := getWorktreeInfo(normalizedPath, cfg.Projects[projectIndex].Path)
 		if worktreeName != "" && repoPath != "" {
 			serviceName = repoPath + ":" + worktreeName
