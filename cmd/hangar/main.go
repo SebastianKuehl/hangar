@@ -862,6 +862,7 @@ func (m *model) toggleProject(project Project) tea.Cmd {
 		return nil
 	}
 
+	activeServices := 0
 	shouldStop := false
 	for i, service := range project.Services {
 		if !m.serviceRuntime[i].known {
@@ -876,9 +877,15 @@ func (m *model) toggleProject(project Project) tea.Cmd {
 		if service.Ignored {
 			continue
 		}
+		activeServices++
 		if m.serviceRuntime[i].running {
 			shouldStop = true
 		}
+	}
+
+	if activeServices == 0 {
+		m.errMsg = "All services in this project are ignored."
+		return nil
 	}
 
 	cmds := make([]tea.Cmd, 0, len(project.Services))
@@ -1377,8 +1384,9 @@ func (m model) viewMain() string {
 	contentH := max(0, m.height-1)
 
 	barBg := colorBorder // matches pane border color
+	const barPad = 1    // horizontal padding on each side of both segments
 	hint := "? help"
-	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg)
+	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Padding(0, barPad)
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Background(barBg).Bold(true)
 
 	leftContent := ""
@@ -1392,9 +1400,9 @@ func (m model) viewMain() string {
 	if leftWidth < 0 {
 		leftWidth = 0
 	}
-	// Truncate error text so the bar is always exactly one row.
-	leftContent = ansi.Truncate(leftContent, leftWidth, "…")
-	leftStyle := lipgloss.NewStyle().Width(leftWidth).MaxHeight(1).Background(barBg)
+	// Truncate error text accounting for left padding; bar stays exactly one row.
+	leftContent = ansi.Truncate(leftContent, max(0, leftWidth-barPad), "…")
+	leftStyle := lipgloss.NewStyle().Width(leftWidth).MaxHeight(1).Background(barBg).PaddingLeft(barPad)
 	statusBar := "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftContent), hintRendered)
 
 	rightVisible := m.details.visible || m.logs.visible
