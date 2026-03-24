@@ -517,6 +517,10 @@ var (
 				Background(lipgloss.Color("#21262d")).
 				Width(36)
 
+	fieldMutedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6e7681")).
+			Width(36)
+
 	fieldRequiredMark = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Render(" *")
 
 	modalErrStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true)
@@ -586,15 +590,25 @@ func (m model) renderModal(screenW, screenH int) string {
 		}
 		lines = append(lines, style.Render(display), "")
 
-		if i == 1 && len(f.pathSuggestions) > 0 {
-			for pathIdx, path := range f.pathSuggestions {
-				marker := "○ "
-				if pathIdx == f.pathIndex {
-					marker = "◉ "
+		if i == 1 {
+			suggestionCount := len(f.pathSuggestions)
+			if suggestionCount == 0 {
+				suggestionCount = 1
+			}
+			for idx := 0; idx < 5; idx++ {
+				var display string
+				if idx < len(f.pathSuggestions) {
+					path := f.pathSuggestions[idx]
+					marker := "▸ "
+					if idx == f.pathIndex && f.activeField == 1 {
+						marker = "▸*"
+					}
+					display = ansi.Truncate(marker+path, 35, "…")
+				} else {
+					display = "   "
 				}
-				display := ansi.Truncate(marker+path, 35, "…")
-				pathStyle := fieldInactiveStyle
-				if f.activeField == 1 && pathIdx == f.pathIndex {
+				pathStyle := fieldMutedStyle
+				if idx == f.pathIndex && f.activeField == 1 {
 					pathStyle = fieldActiveStyle
 				}
 				lines = append(lines, pathStyle.Render(display))

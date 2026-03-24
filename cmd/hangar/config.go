@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -1110,6 +1111,8 @@ func discoverProjectsFromBasePath(basePath string) ([]Service, error) {
 	return discoverServices(projectPath)
 }
 
+const maxPathSuggestions = 5
+
 func discoverSubdirectories(basePath, filter string) []string {
 	if strings.TrimSpace(basePath) == "" {
 		return nil
@@ -1131,6 +1134,10 @@ func discoverSubdirectories(basePath, filter string) []string {
 	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+
+		if len(dirs) >= maxPathSuggestions {
+			return io.EOF
 		}
 
 		if !d.IsDir() {
@@ -1160,7 +1167,7 @@ func discoverSubdirectories(basePath, filter string) []string {
 		return nil
 	})
 
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return nil
 	}
 
