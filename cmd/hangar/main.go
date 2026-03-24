@@ -686,7 +686,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 
 		switch k {
-		case "q":
+		case "q", "esc":
 			if m.logCancel != nil {
 				m.logCancel()
 			}
