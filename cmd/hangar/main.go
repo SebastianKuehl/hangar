@@ -390,6 +390,7 @@ func newModel() model {
 	if err != nil {
 		m.errMsg = "Error initializing hangar runtime: " + err.Error()
 	}
+	m.ensureFocusVisible()
 	m.syncSelectionState()
 	m.runtimeLoading = m.shouldShowRuntimeLoading()
 	m.loadingTicker = m.runtimeLoading
