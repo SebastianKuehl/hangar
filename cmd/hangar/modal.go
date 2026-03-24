@@ -671,6 +671,16 @@ func updateProjectCmd(projectIndex int, name, path string) tea.Cmd {
 	}
 }
 
+func setProjectAsDefaultCmd(projectIndex int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := setProjectAsDefault(projectIndex)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
 // saveServiceCmd returns a tea.Cmd that persists a new service asynchronously.
 func saveServiceCmd(projectIndex int, name, path, command string) tea.Cmd {
 	return func() tea.Msg {

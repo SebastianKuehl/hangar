@@ -29,6 +29,7 @@ type Project struct {
 	Name     string    `yaml:"name"`
 	Path     string    `yaml:"path,omitempty"`
 	Services []Service `yaml:"services,omitempty"`
+	Default  bool      `yaml:"default,omitempty"`
 }
 
 // Config is the root structure persisted to projects.yaml.
@@ -173,6 +174,23 @@ func updateProject(projectIndex int, name, path string) (Config, error) {
 
 	cfg.Projects[projectIndex].Name = strings.TrimSpace(name)
 	cfg.Projects[projectIndex].Path = projectPath
+	return cfg, saveConfig(cfg)
+}
+
+// setProjectAsDefault marks the project at the given index as the default project.
+func setProjectAsDefault(projectIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
+	}
+
+	for i := range cfg.Projects {
+		cfg.Projects[i].Default = false
+	}
+	cfg.Projects[projectIndex].Default = true
 	return cfg, saveConfig(cfg)
 }
 
