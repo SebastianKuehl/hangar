@@ -258,6 +258,23 @@ func moveServiceDown(projectIndex, serviceIndex int) (Config, error) {
 	return cfg, saveConfig(cfg)
 }
 
+// swapServices swaps two services at the given indices in a project.
+func swapServices(projectIndex, idxA, idxB int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range", projectIndex)
+	}
+	services := cfg.Projects[projectIndex].Services
+	if idxA < 0 || idxA >= len(services) || idxB < 0 || idxB >= len(services) {
+		return cfg, fmt.Errorf("service index out of range")
+	}
+	services[idxA], services[idxB] = services[idxB], services[idxA]
+	return cfg, saveConfig(cfg)
+}
+
 // updateService updates an existing service's editable fields and persists.
 func updateService(projectIndex, serviceIndex int, name, path, command string) (Config, error) {
 	cfg, err := loadConfig()

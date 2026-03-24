@@ -739,6 +739,44 @@ func TestMoveServiceDownWithinGroup(t *testing.T) {
 	}
 }
 
+func TestSwapServicesWithinGroup(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("HOME", configHome)
+
+	if err := saveConfig(Config{
+		Projects: []Project{
+			{
+				Name: "Demo",
+				Path: "/tmp/demo",
+				Services: []Service{
+					{Name: "first", Runtime: "node"},
+					{Name: "second", Runtime: "node"},
+					{Name: "third", Runtime: "node"},
+					{Name: "bun-svc", Runtime: "bun"},
+					{Name: "fourth", Runtime: "node"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig returned error: %v", err)
+	}
+
+	// Swap non-adjacent services in the same group (first and fourth, with bun in between)
+	cfg, err := swapServices(0, 0, 4)
+	if err != nil {
+		t.Fatalf("swapServices returned error: %v", err)
+	}
+
+	names := []string{}
+	for _, s := range cfg.Projects[0].Services {
+		names = append(names, s.Name)
+	}
+	want := []string{"fourth", "second", "third", "bun-svc", "first"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("services = %v, want %v", names, want)
+	}
+}
+
 func TestMoveServiceCannotCrossGroups(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("HOME", configHome)

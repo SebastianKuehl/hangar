@@ -993,15 +993,35 @@ func (m *model) moveSelectedServiceUp() tea.Cmd {
 	if svcIdx < 0 {
 		return nil
 	}
-	if svcIdx == 0 {
+
+	// Find all service rows in the same group as the selected service
+	selectedKey := effectiveGroupKey(project.Services[svcIdx])
+
+	// Collect service rows from the same group in display order
+	var groupServiceRows []serviceDisplayRow
+	for _, row := range m.serviceDisplayRows {
+		if row.kind == serviceRowService && effectiveGroupKey(project.Services[row.serviceIndex]) == selectedKey {
+			groupServiceRows = append(groupServiceRows, row)
+		}
+	}
+
+	// Find position within group
+	posInGroup := -1
+	for i, row := range groupServiceRows {
+		if row.serviceIndex == svcIdx {
+			posInGroup = i
+			break
+		}
+	}
+
+	if posInGroup <= 0 {
 		m.errMsg = "Service is already at the top of its group."
 		return nil
 	}
-	if effectiveGroupKey(project.Services[svcIdx]) != effectiveGroupKey(project.Services[svcIdx-1]) {
-		m.errMsg = "Cannot move service across runtime groups. Move the header instead."
-		return nil
-	}
-	return moveServiceUpCmd(m.projects.selected, svcIdx)
+
+	// Swap with the service above in the group
+	swapRow := groupServiceRows[posInGroup-1]
+	return swapServicesCmd(m.projects.selected, svcIdx, swapRow.serviceIndex)
 }
 
 func (m *model) moveSelectedServiceDown() tea.Cmd {
@@ -1013,15 +1033,35 @@ func (m *model) moveSelectedServiceDown() tea.Cmd {
 	if svcIdx < 0 {
 		return nil
 	}
-	if svcIdx >= len(project.Services)-1 {
+
+	// Find all service rows in the same group as the selected service
+	selectedKey := effectiveGroupKey(project.Services[svcIdx])
+
+	// Collect service rows from the same group in display order
+	var groupServiceRows []serviceDisplayRow
+	for _, row := range m.serviceDisplayRows {
+		if row.kind == serviceRowService && effectiveGroupKey(project.Services[row.serviceIndex]) == selectedKey {
+			groupServiceRows = append(groupServiceRows, row)
+		}
+	}
+
+	// Find position within group
+	posInGroup := -1
+	for i, row := range groupServiceRows {
+		if row.serviceIndex == svcIdx {
+			posInGroup = i
+			break
+		}
+	}
+
+	if posInGroup < 0 || posInGroup >= len(groupServiceRows)-1 {
 		m.errMsg = "Service is already at the bottom of its group."
 		return nil
 	}
-	if effectiveGroupKey(project.Services[svcIdx]) != effectiveGroupKey(project.Services[svcIdx+1]) {
-		m.errMsg = "Cannot move service across runtime groups. Move the header instead."
-		return nil
-	}
-	return moveServiceDownCmd(m.projects.selected, svcIdx)
+
+	// Swap with the service below in the group
+	swapRow := groupServiceRows[posInGroup+1]
+	return swapServicesCmd(m.projects.selected, svcIdx, swapRow.serviceIndex)
 }
 
 func (m *model) toggleServiceGroup(project Project, header serviceDisplayRow) tea.Cmd {
@@ -1879,7 +1919,17 @@ func paneRows(p listPane, innerW int, focused bool, highlightSel bool, wrap bool
 	}
 
 	plainLine := lipgloss.NewStyle()
+	separatorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#777777"))
+
 	for i, it := range p.items {
+		// Handle separator specially - render full-width line with 70% opacity
+		if it == "─" {
+			sep := separatorStyle.Width(innerW).Render("─")
+			lines = append(lines, sep)
+			continue
+		}
+
 		line := it
 		style := plainLine
 		if i == p.selected {

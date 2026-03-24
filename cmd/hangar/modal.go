@@ -648,6 +648,17 @@ func moveServiceDownCmd(projectIndex, serviceIndex int) tea.Cmd {
 	}
 }
 
+// swapServicesCmd returns a tea.Cmd that swaps two services in a project.
+func swapServicesCmd(projectIndex, idxA, idxB int) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := swapServices(projectIndex, idxA, idxB)
+		if err != nil {
+			return configErrMsg{err}
+		}
+		return configSavedMsg{cfg}
+	}
+}
+
 // ---- confirm modal ------------------------------------------------------------
 
 // confirmAction identifies what action the confirm modal is confirming.
