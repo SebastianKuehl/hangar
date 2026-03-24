@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -299,11 +300,24 @@ func (f *formModal) applySuggestion() {
 }
 
 func (f *formModal) updatePathSuggestions(filter string) {
-	if f.project.Path == "" {
+	basePath := f.project.Path
+
+	if strings.HasPrefix(filter, "~") || strings.HasPrefix(filter, "/") {
+		absPath, err := normalizeAbsolutePath(filter, "")
+		if err == nil {
+			info, err := os.Stat(absPath)
+			if err == nil && info.IsDir() {
+				basePath = absPath
+				filter = ""
+			}
+		}
+	}
+
+	if basePath == "" {
 		f.pathSuggestions = nil
 		return
 	}
-	f.pathSuggestions = discoverSubdirectories(f.project.Path, filter)
+	f.pathSuggestions = discoverSubdirectories(basePath, filter)
 	f.pathIndex = 0
 }
 
