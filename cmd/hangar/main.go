@@ -675,14 +675,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.showHelp {
 			switch k {
-			case "?", "esc":
+			case "?", "q", "esc":
 				m.showHelp = false
 				return m, nil
-			case "q":
-				if m.logCancel != nil {
-					m.logCancel()
-				}
-				return m, tea.Quit
 			default:
 				return m, nil
 			}
@@ -1884,7 +1879,7 @@ func (m model) viewMain() string {
 	contentH := max(0, m.height-1)
 
 	barBg := colorBorder // matches pane border color
-	const barPad = 1    // horizontal padding on each side of both segments
+	const barPad = 1     // horizontal padding on each side of both segments
 	hint := "q quit  ? help"
 	hintStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Padding(0, barPad)
 	errStyle := lipgloss.NewStyle().Foreground(colorTitle).Background(barBg).Bold(true)
