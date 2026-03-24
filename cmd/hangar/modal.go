@@ -84,16 +84,20 @@ func (f *formField) setOptions(options []string, selected string) {
 
 func (f *formField) setCommandOptions(options []string, command string) {
 	f.options = append([]string(nil), options...)
-	f.options = append(f.options, "__custom__")
 	f.optionIndex = 0
 	f.value = ""
 	f.customValue = ""
 
+	if len(f.options) == 0 {
+		f.kind = fieldText
+		f.value = command
+		return
+	}
+
+	f.kind = fieldSelect
 	command = strings.TrimSpace(command)
 	if command == "" {
-		if len(f.options) > 0 {
-			f.value = f.options[f.optionIndex]
-		}
+		f.value = f.options[f.optionIndex]
 		return
 	}
 
@@ -105,9 +109,7 @@ func (f *formField) setCommandOptions(options []string, command string) {
 		}
 	}
 
-	f.optionIndex = len(f.options) - 1
-	f.value = "__custom__"
-	f.customValue = command
+	f.value = command
 }
 
 func (f *formField) cycleOption(step int) {
@@ -131,10 +133,6 @@ func (f *formField) selectedOption() string {
 		return ""
 	}
 	return f.options[f.optionIndex]
-}
-
-func (f *formField) isCustomSelected() bool {
-	return f.selectedOption() == "__custom__"
 }
 
 // formModal tracks all state for the project / service overlay.
@@ -192,16 +190,21 @@ func (f *formModal) openCreateService(project Project, cfg Config) {
 
 	suggestions := discoverAvailableServices(project, cfg)
 
+	fields := []formField{
+		{label: "Service name", required: true},
+		{label: pathLabel, required: pathRequired},
+		{kind: fieldText, label: "Command", required: true, value: ""},
+	}
+
+	if len(suggestions) > 0 {
+		fields = append(fields, newSelectField("Suggestions", false, suggestions, ""))
+	}
+
 	*f = formModal{
 		mode:        modalCreateService,
 		project:     project,
 		projectName: project.Name,
-		fields: []formField{
-			{label: "Service name", required: true},
-			{label: pathLabel, required: pathRequired},
-			{label: "Custom command", required: true},
-			newSelectField("Suggestions", false, suggestions, ""),
-		},
+		fields:      fields,
 	}
 	f.syncServiceCommandField("")
 }
@@ -238,21 +241,13 @@ func (f *formModal) commandField() *formField {
 
 func (f *formModal) selectedCommand() string {
 	field := f.commandField()
-	if field == nil || field.isCustomSelected() {
-		return ""
-	}
-	return strings.TrimSpace(field.selectedOption())
-}
-
-func (f *formModal) customCommand() string {
-	field := f.commandField()
 	if field == nil {
 		return ""
 	}
-	if !field.isCustomSelected() {
-		return ""
+	if field.kind == fieldText {
+		return strings.TrimSpace(field.value)
 	}
-	return strings.TrimSpace(field.customValue)
+	return strings.TrimSpace(field.selectedOption())
 }
 
 func (f *formModal) syncServiceCommandField(existingCommand string) {
@@ -261,27 +256,24 @@ func (f *formModal) syncServiceCommandField(existingCommand string) {
 	}
 
 	commandField := &f.fields[2]
-	existingCustom := commandField.customValue
-	if existingCustom == "" {
-		existingCustom = strings.TrimSpace(existingCommand)
-	}
 
 	options := []string(nil)
 	if strings.TrimSpace(f.path()) != "" {
 		options = serviceCommandOptions(f.project, f.path(), "")
 	}
 
-	selected := commandField.selectedOption()
 	command := strings.TrimSpace(existingCommand)
-	if commandField.isCustomSelected() {
-		command = existingCustom
-	} else if selected != "" && selected != "__custom__" {
-		command = selected
+	if commandField.kind == fieldSelect && commandField.optionIndex >= 0 && commandField.optionIndex < len(commandField.options) {
+		selected := commandField.selectedOption()
+		if selected != "" {
+			command = selected
+		}
+	} else if commandField.kind == fieldText {
+		command = commandField.value
 	}
 
 	commandField.label = "Command"
 	commandField.required = true
-	commandField.kind = fieldSelect
 	commandField.setCommandOptions(options, command)
 }
 
@@ -315,35 +307,6 @@ func (f *formModal) close() {
 // handleKey processes a key event while the modal is open.
 // Returns (shouldSubmit, shouldClose).
 func (f *formModal) handleKey(k string) (submit bool, close bool) {
-	if f.activeField >= 0 && f.activeField < len(f.fields) {
-		cur := &f.fields[f.activeField]
-		if cur.kind == fieldSelect && cur.isCustomSelected() {
-			switch k {
-			case "backspace":
-				if len(cur.customValue) == 0 {
-					return false, false
-				}
-				runes := []rune(cur.customValue)
-				cur.customValue = string(runes[:len(runes)-1])
-				return false, false
-			case "left", "right":
-				f.errMsg = ""
-				if k == "left" {
-					cur.cycleOption(-1)
-				} else {
-					cur.cycleOption(1)
-				}
-				return false, false
-			default:
-				if utf8.RuneCountInString(k) == 1 {
-					cur.customValue += k
-					f.errMsg = ""
-					return false, false
-				}
-			}
-		}
-	}
-
 	switch k {
 	case "esc":
 		return false, true
@@ -389,10 +352,6 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 			return false, false
 		}
 		for _, fld := range f.fields {
-			if fld.kind == fieldSelect && fld.required && fld.isCustomSelected() && strings.TrimSpace(fld.customValue) == "" {
-				f.errMsg = "\"" + fld.label + "\" is required."
-				return false, false
-			}
 			if fld.kind != fieldSelect && fld.required && strings.TrimSpace(fld.value) == "" {
 				f.errMsg = "\"" + fld.label + "\" is required."
 				return false, false
@@ -401,14 +360,6 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		return true, false
 	case "backspace":
 		cur := &f.fields[f.activeField]
-		if cur.kind == fieldSelect && cur.isCustomSelected() {
-			if len(cur.customValue) == 0 {
-				return false, false
-			}
-			runes := []rune(cur.customValue)
-			cur.customValue = string(runes[:len(runes)-1])
-			return false, false
-		}
 		if cur.kind != fieldText || len(cur.value) == 0 {
 			return false, false
 		}
@@ -419,10 +370,6 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		}
 	default:
 		cur := &f.fields[f.activeField]
-		if cur.kind == fieldSelect && cur.isCustomSelected() && utf8.RuneCountInString(k) == 1 {
-			cur.customValue += k
-			return false, false
-		}
 		if cur.kind == fieldText && utf8.RuneCountInString(k) == 1 {
 			cur.value += k
 			if f.isServiceMode() && f.activeField == 1 {
@@ -449,11 +396,8 @@ func (f *formModal) path() string {
 	return strings.TrimSpace(f.fields[1].value)
 }
 
-// command returns the custom command when present, otherwise the selected runtime command.
+// command returns the selected or custom command.
 func (f *formModal) command() string {
-	if custom := f.customCommand(); custom != "" {
-		return custom
-	}
 	return f.selectedCommand()
 }
 
@@ -560,15 +504,7 @@ func (m model) renderModal(screenW, screenH int) string {
 				if optionIndex == fld.optionIndex {
 					marker = "◉ "
 				}
-				optionLabel := option
-				if option == "__custom__" {
-					cursor := ""
-					if i == f.activeField && optionIndex == fld.optionIndex {
-						cursor = "▌"
-					}
-					optionLabel = "Custom: " + fld.customValue + cursor
-				}
-				display := ansi.Truncate(marker+optionLabel, 35, "…")
+				display := ansi.Truncate(marker+option, 35, "…")
 				style := fieldInactiveStyle
 				if i == f.activeField && optionIndex == fld.optionIndex {
 					style = fieldActiveStyle
