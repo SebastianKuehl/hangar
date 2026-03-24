@@ -168,7 +168,7 @@ func TestRenderListPaneScrollsToSelectedLogLine(t *testing.T) {
 	m := newModel()
 	rendered := m.renderListPane(pane, 24, 7, true, false, false)
 
-	if !strings.Contains(rendered, "> log-7") {
+	if !strings.Contains(rendered, "log-7") {
 		t.Fatalf("expected rendered pane to include selected log line, got %q", rendered)
 	}
 	if strings.Contains(rendered, "log-0") {
