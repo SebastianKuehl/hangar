@@ -443,6 +443,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		m.errMsg = ""
+
 		switch k {
 		case "q":
 			if m.logCancel != nil {
@@ -1371,14 +1373,28 @@ func (m model) View() string {
 func (m model) viewMain() string {
 	gap := 1
 
-	// Reserve 1 row for the status/error bar at the bottom when there's a message.
-	contentH := m.height
-	statusBar := ""
+	// Always reserve 1 row for the bottom bar.
+	contentH := max(0, m.height-1)
+
+	hint := "? help"
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true)
+
+	leftContent := ""
 	if m.errMsg != "" {
-		contentH = max(0, m.height-1)
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Bold(true).Width(m.width)
-		statusBar = "\n" + errStyle.Render("⚠ "+m.errMsg)
+		leftContent = errStyle.Render("⚠ " + m.errMsg)
 	}
+
+	hintRendered := hintStyle.Render(hint)
+	hintWidth := lipgloss.Width(hintRendered)
+	leftWidth := m.width - hintWidth
+	if leftWidth < 0 {
+		leftWidth = 0
+	}
+	// Truncate error text so the bar is always exactly one row.
+	leftContent = ansi.Truncate(leftContent, leftWidth, "…")
+	leftStyle := lipgloss.NewStyle().Width(leftWidth).MaxHeight(1)
+	statusBar := "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftContent), hintRendered)
 
 	rightVisible := m.details.visible || m.logs.visible
 
