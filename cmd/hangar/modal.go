@@ -212,9 +212,17 @@ func (f *formModal) openEditService(project Project, service Service) {
 			{label: "Service name", value: service.Name, required: true},
 			{label: "Path (optional)", value: service.Path},
 			newCommandField("Command", true, nil, service.Command),
+			newSelectField("Ignore", false, []string{"no", "yes"}, boolToYesNo(service.Ignored)),
 		},
 	}
 	f.syncServiceCommandField(service.Command)
+}
+
+func boolToYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 func (f *formModal) commandField() *formField {
@@ -411,6 +419,14 @@ func (f *formModal) command() string {
 	return f.selectedCommand()
 }
 
+// ignored returns whether the Ignore toggle is set to "yes" in the edit service form.
+func (f *formModal) ignored() bool {
+	if f.mode != modalEditService || len(f.fields) < 4 {
+		return false
+	}
+	return f.fields[3].selectedOption() == "yes"
+}
+
 // configErrMsg is sent to the model when a config I/O error occurs.
 type configErrMsg struct{ err error }
 
@@ -586,9 +602,9 @@ func saveServiceCmd(projectIndex int, name, path, command string) tea.Cmd {
 	}
 }
 
-func updateServiceCmd(projectIndex, serviceIndex int, name, path, command string, previousProject Project, previousService Service, previousRuntime serviceRuntime, previousOwnedPID int32) tea.Cmd {
+func updateServiceCmd(projectIndex, serviceIndex int, name, path, command string, ignored bool, previousProject Project, previousService Service, previousRuntime serviceRuntime, previousOwnedPID int32) tea.Cmd {
 	return func() tea.Msg {
-		cfg, err := updateService(projectIndex, serviceIndex, name, path, command)
+		cfg, err := updateService(projectIndex, serviceIndex, name, path, command, ignored)
 		if err != nil {
 			return configErrMsg{err}
 		}

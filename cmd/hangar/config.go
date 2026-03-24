@@ -18,6 +18,7 @@ type Service struct {
 	Name    string `yaml:"name"`
 	Path    string `yaml:"path,omitempty"`
 	Command string `yaml:"command,omitempty"`
+	Ignored bool   `yaml:"ignored,omitempty"`
 }
 
 // Project groups a set of services under a named entry.
@@ -216,8 +217,24 @@ func deleteService(projectIndex, serviceIndex int) (Config, error) {
 	return cfg, saveConfig(cfg)
 }
 
+// toggleServiceIgnored flips the Ignored flag for a service and persists.
+func toggleServiceIgnored(projectIndex, serviceIndex int) (Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	if projectIndex < 0 || projectIndex >= len(cfg.Projects) {
+		return cfg, fmt.Errorf("project index %d out of range (have %d projects)", projectIndex, len(cfg.Projects))
+	}
+	if serviceIndex < 0 || serviceIndex >= len(cfg.Projects[projectIndex].Services) {
+		return cfg, fmt.Errorf("service index %d out of range (have %d services)", serviceIndex, len(cfg.Projects[projectIndex].Services))
+	}
+	cfg.Projects[projectIndex].Services[serviceIndex].Ignored = !cfg.Projects[projectIndex].Services[serviceIndex].Ignored
+	return cfg, saveConfig(cfg)
+}
+
 // updateService updates an existing service's editable fields and persists.
-func updateService(projectIndex, serviceIndex int, name, path, command string) (Config, error) {
+func updateService(projectIndex, serviceIndex int, name, path, command string, ignored bool) (Config, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return cfg, err
@@ -243,6 +260,7 @@ func updateService(projectIndex, serviceIndex int, name, path, command string) (
 		Name:    strings.TrimSpace(name),
 		Path:    normalizedPath,
 		Command: command,
+		Ignored: ignored,
 	}
 	return cfg, saveConfig(cfg)
 }

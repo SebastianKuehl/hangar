@@ -216,6 +216,7 @@ func serviceDetailsItems(project Project, service Service, runtime serviceRuntim
 		"Path: " + servicePath(project, service),
 		"Command: " + fallbackValue(service.Command, "unavailable"),
 		"Status: " + status,
+		"Ignored: " + boolToYesNo(service.Ignored),
 		"Log file: " + fallbackValue(rt.LogPath, "unavailable"),
 	}
 	if rt.PID > 0 {
