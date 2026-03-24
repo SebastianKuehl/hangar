@@ -509,17 +509,14 @@ var (
 
 	fieldActiveStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#ffffff")).
-				Background(lipgloss.Color("#238636")).
-				Width(36)
+				Background(lipgloss.Color("#238636"))
 
 	fieldInactiveStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#c9d1d9")).
-				Background(lipgloss.Color("#21262d")).
-				Width(36)
+				Background(lipgloss.Color("#21262d"))
 
 	fieldMutedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6e7681")).
-			Width(36)
+			Foreground(lipgloss.Color("#6e7681"))
 
 	fieldRequiredMark = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Render(" *")
 
@@ -567,7 +564,7 @@ func (m model) renderModal(screenW, screenH int) string {
 				if optionIndex == fld.optionIndex {
 					marker = "◉ "
 				}
-				display := ansi.Truncate(marker+option, 35, "…")
+				display := ansi.Truncate(marker+option, 55, "…")
 				style := fieldInactiveStyle
 				if i == f.activeField && optionIndex == fld.optionIndex {
 					style = fieldActiveStyle
@@ -582,7 +579,7 @@ func (m model) renderModal(screenW, screenH int) string {
 		if i == f.activeField {
 			cursor = "▌"
 		}
-		display := ansi.Truncate(fld.value+cursor, 35, "…")
+		display := ansi.Truncate(fld.value+cursor, 55, "…")
 
 		style := fieldInactiveStyle
 		if i == f.activeField {
@@ -603,7 +600,7 @@ func (m model) renderModal(screenW, screenH int) string {
 					if idx == f.pathIndex && f.activeField == 1 {
 						marker = "▸*"
 					}
-					display = ansi.Truncate(marker+path, 35, "…")
+					display = ansi.Truncate(marker+path, 55, "…")
 				} else {
 					display = "   "
 				}
