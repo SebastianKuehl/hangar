@@ -322,7 +322,13 @@ func (f *formModal) updatePathSuggestions(filter string) {
 }
 
 func (f *formModal) selectPathSuggestion() {
-	if f.activeField != 1 || len(f.pathSuggestions) == 0 || f.pathIndex >= len(f.pathSuggestions) {
+	if f.activeField != 1 || len(f.pathSuggestions) == 0 {
+		return
+	}
+	if f.pathIndex >= len(f.pathSuggestions) {
+		return
+	}
+	if len(f.pathSuggestions) > 5 && f.pathIndex >= 4 {
 		return
 	}
 	f.fields[1].value = f.pathSuggestions[f.pathIndex]
@@ -350,7 +356,11 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 	case "tab", "down":
 		f.errMsg = ""
 		if f.activeField == 1 && len(f.pathSuggestions) > 0 {
-			if f.pathIndex < len(f.pathSuggestions)-1 {
+			maxIdx := len(f.pathSuggestions) - 1
+			if len(f.pathSuggestions) > 5 {
+				maxIdx = 3
+			}
+			if f.pathIndex < maxIdx {
 				f.pathIndex++
 				return false, false
 			}
@@ -588,24 +598,31 @@ func (m model) renderModal(screenW, screenH int) string {
 		lines = append(lines, style.Render(display), "")
 
 		if i == 1 {
-			suggestionCount := len(f.pathSuggestions)
-			if suggestionCount == 0 {
-				suggestionCount = 1
-			}
+			hasMore := len(f.pathSuggestions) > 5
 			for idx := 0; idx < 5; idx++ {
 				var display string
+				var isSelectable bool
+
 				if idx < len(f.pathSuggestions) {
-					path := f.pathSuggestions[idx]
-					marker := "▸ "
-					if idx == f.pathIndex && f.activeField == 1 {
-						marker = "▸*"
+					if hasMore && idx == 4 {
+						display = "... "
+						isSelectable = false
+					} else {
+						path := f.pathSuggestions[idx]
+						marker := "▸ "
+						if idx == f.pathIndex && f.activeField == 1 {
+							marker = "▸*"
+						}
+						display = ansi.Truncate(marker+path, 55, "…")
+						isSelectable = true
 					}
-					display = ansi.Truncate(marker+path, 55, "…")
 				} else {
 					display = "   "
+					isSelectable = false
 				}
+
 				pathStyle := fieldMutedStyle
-				if idx == f.pathIndex && f.activeField == 1 {
+				if idx == f.pathIndex && f.activeField == 1 && isSelectable {
 					pathStyle = fieldActiveStyle
 				}
 				lines = append(lines, pathStyle.Render(display))
