@@ -209,10 +209,14 @@ func addService(projectIndex int, name, path, command string) (Config, error) {
 	}
 
 	serviceName := strings.TrimSpace(name)
-	if normalizedPath != "" && (serviceName == "" || isWorktreePath(normalizedPath, cfg.Projects[projectIndex].Path)) {
-		worktreeName, repoPath := getWorktreeInfo(normalizedPath, cfg.Projects[projectIndex].Path)
-		if worktreeName != "" && repoPath != "" {
-			serviceName = repoPath + ":" + worktreeName
+	if serviceName == "" && normalizedPath != "" {
+		if isWorktreePath(normalizedPath, cfg.Projects[projectIndex].Path) {
+			worktreeName, repoPath := getWorktreeInfo(normalizedPath, cfg.Projects[projectIndex].Path)
+			if worktreeName != "" && repoPath != "" {
+				serviceName = repoPath + ":" + worktreeName
+			} else {
+				serviceName = filepath.Base(normalizedPath)
+			}
 		} else if serviceName == "" {
 			serviceName = filepath.Base(normalizedPath)
 		}
@@ -1149,7 +1153,7 @@ func discoverProjectsFromBasePath(basePath string) ([]Service, error) {
 	return discoverServices(projectPath)
 }
 
-func discoverAvailableServices(project Project, cfg Config) []string {
+func discoverAvailableServices(project Project, cfg Config) []serviceSuggestion {
 	existingPaths := make(map[string]bool)
 	for _, svc := range project.Services {
 		svcPath := svc.Path
@@ -1160,9 +1164,10 @@ func discoverAvailableServices(project Project, cfg Config) []string {
 	}
 
 	type discoveredService struct {
-		name    string
-		path    string
-		command string
+		name       string
+		path       string
+		command    string
+		isWorktree bool
 	}
 	var discovered []discoveredService
 
@@ -1180,9 +1185,10 @@ func discoverAvailableServices(project Project, cfg Config) []string {
 					if err2 == nil && !existingPaths[svcPathAbs] {
 						relPath, _ := filepath.Rel(projectPathAbs, svcPathAbs)
 						discovered = append(discovered, discoveredService{
-							name:    svc.Name,
-							path:    relPath,
-							command: svc.Command,
+							name:       svc.Name,
+							path:       relPath,
+							command:    svc.Command,
+							isWorktree: strings.Contains(svc.Name, ":"),
 						})
 					}
 				}
@@ -1204,9 +1210,10 @@ func discoverAvailableServices(project Project, cfg Config) []string {
 					if err3 == nil && !existingPaths[svcPathAbs] {
 						relPath, _ := filepath.Rel(projectPathAbs, svcPathAbs)
 						discovered = append(discovered, discoveredService{
-							name:    svc.Name,
-							path:    relPath,
-							command: svc.Command,
+							name:       svc.Name,
+							path:       relPath,
+							command:    svc.Command,
+							isWorktree: strings.Contains(svc.Name, ":"),
 						})
 					}
 				}
@@ -1259,19 +1266,40 @@ func discoverAvailableServices(project Project, cfg Config) []string {
 			if projectPathAbs != "" {
 				relPath, _ := filepath.Rel(projectPathAbs, wtPathAbs)
 				discovered = append(discovered, discoveredService{
-					name:    wt.Name,
-					path:    relPath,
-					command: wt.Command,
+					name:       wt.Name,
+					path:       relPath,
+					command:    wt.Command,
+					isWorktree: true,
 				})
 			}
 		}
 	}
 
-	var suggestions []string
+	baseNameCount := make(map[string]int)
 	for _, svc := range discovered {
-		suggestions = append(suggestions, svc.name+" | "+svc.path+" | "+svc.command)
+		baseName := svc.name
+		if idx := strings.Index(baseName, ":"); idx != -1 {
+			baseName = baseName[:idx]
+		}
+		baseNameCount[baseName]++
 	}
 
-	sort.Strings(suggestions)
+	var suggestions []serviceSuggestion
+	for _, svc := range discovered {
+		displayName := svc.name
+		if baseNameCount[strings.Split(svc.name, ":")[0]] > 1 {
+			displayName = svc.name + " (" + svc.path + ")"
+		}
+		suggestions = append(suggestions, serviceSuggestion{
+			displayName: displayName,
+			name:        svc.name,
+			path:        svc.path,
+			command:     svc.command,
+		})
+	}
+
+	sort.Slice(suggestions, func(i, j int) bool {
+		return suggestions[i].displayName < suggestions[j].displayName
+	})
 	return suggestions
 }

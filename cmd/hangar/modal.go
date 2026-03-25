@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // modalMode distinguishes which form is active.
@@ -135,6 +138,14 @@ func (f *formField) selectedOption() string {
 	return f.options[f.optionIndex]
 }
 
+// serviceSuggestion holds a display name and the actual service data.
+type serviceSuggestion struct {
+	displayName string
+	name        string
+	path        string
+	command     string
+}
+
 // formModal tracks all state for the project / service overlay.
 type formModal struct {
 	mode        modalMode
@@ -143,6 +154,7 @@ type formModal struct {
 	errMsg      string
 	project     Project
 	projectName string
+	suggestions []serviceSuggestion
 }
 
 // isOpen reports whether any modal is currently visible.
@@ -191,7 +203,11 @@ func (f *formModal) openCreateService(project Project, cfg Config) {
 	}
 
 	if len(suggestions) > 0 {
-		fields = append(fields, newSelectField("Suggestions", false, suggestions, ""))
+		displayOptions := make([]string, len(suggestions))
+		for i, s := range suggestions {
+			displayOptions[i] = s.displayName
+		}
+		fields = append(fields, newSelectField("Suggestions", false, displayOptions, ""))
 	}
 
 	*f = formModal{
@@ -199,6 +215,7 @@ func (f *formModal) openCreateService(project Project, cfg Config) {
 		project:     project,
 		projectName: project.Name,
 		fields:      fields,
+		suggestions: suggestions,
 	}
 	f.syncServiceCommandField("")
 }
@@ -272,25 +289,22 @@ func (f *formModal) syncServiceCommandField(existingCommand string) {
 }
 
 func (f *formModal) applySuggestion() {
-	if f.mode != modalCreateService || len(f.fields) < 4 {
+	if f.mode != modalCreateService || len(f.fields) < 4 || len(f.suggestions) == 0 {
 		return
 	}
 
 	suggestionField := &f.fields[3]
-	selected := suggestionField.selectedOption()
-	if selected == "" {
+	if suggestionField.optionIndex < 0 || suggestionField.optionIndex >= len(f.suggestions) {
 		return
 	}
 
-	parts := strings.Split(selected, " | ")
-	if len(parts) != 3 {
-		return
-	}
+	f.errMsg = ""
 
-	f.fields[0].value = parts[0]
-	f.fields[1].value = parts[1]
+	suggestion := f.suggestions[suggestionField.optionIndex]
+	f.fields[0].value = suggestion.name
+	f.fields[1].value = suggestion.path
 
-	f.syncServiceCommandField(parts[2])
+	f.syncServiceCommandField(suggestion.command)
 }
 
 // close dismisses the modal without submitting.
@@ -308,39 +322,44 @@ func (f *formModal) handleKey(k string) (submit bool, close bool) {
 		f.errMsg = ""
 		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex < len(f.fields[f.activeField].options)-1 {
 			f.fields[f.activeField].cycleOption(1)
-			if f.isServiceMode() && f.activeField == 3 {
-				f.applySuggestion()
-			}
 			return false, false
+		}
+		if f.isServiceMode() && f.activeField == 3 {
+			f.fields[3].optionIndex = 0
 		}
 		f.activeField = (f.activeField + 1) % len(f.fields)
 	case "shift+tab", "up":
 		f.errMsg = ""
 		if f.fields[f.activeField].kind == fieldSelect && f.fields[f.activeField].optionIndex > 0 {
 			f.fields[f.activeField].cycleOption(-1)
-			if f.isServiceMode() && f.activeField == 3 {
-				f.applySuggestion()
-			}
 			return false, false
+		}
+		if f.isServiceMode() && f.activeField == 3 {
+			f.fields[3].optionIndex = 0
 		}
 		f.activeField = (f.activeField - 1 + len(f.fields)) % len(f.fields)
 	case "left", "k":
 		if f.fields[f.activeField].kind == fieldSelect {
 			f.errMsg = ""
 			f.fields[f.activeField].cycleOption(-1)
-			if f.isServiceMode() && f.activeField == 3 {
-				f.applySuggestion()
-			}
 		}
 	case "right", "j", " ":
 		if f.fields[f.activeField].kind == fieldSelect {
 			f.errMsg = ""
 			f.fields[f.activeField].cycleOption(1)
-			if f.isServiceMode() && f.activeField == 3 {
-				f.applySuggestion()
-			}
 		}
 	case "enter":
+		if f.isServiceMode() && f.activeField == 3 && len(f.fields) >= 4 && len(f.suggestions) > 0 {
+			suggestionField := &f.fields[3]
+			if suggestionField.optionIndex >= 0 && suggestionField.optionIndex < len(f.suggestions) {
+				suggestion := f.suggestions[suggestionField.optionIndex]
+				f.fields[0].value = suggestion.name
+				f.fields[1].value = suggestion.path
+				command := f.inferServiceCommand(suggestion.path)
+				f.syncServiceCommandField(command)
+				return true, false
+			}
+		}
 		if f.activeField < len(f.fields)-1 {
 			f.activeField++
 			return false, false
@@ -422,6 +441,142 @@ type serviceRestartMsg struct {
 	err           error
 }
 
+func (f *formModal) getSuggestionBaseName(index int) string {
+	if index < 0 || index >= len(f.suggestions) {
+		return ""
+	}
+	name := f.suggestions[index].name
+	if idx := strings.Index(name, ":"); idx != -1 {
+		return name[:idx]
+	}
+	return name
+}
+
+func (f *formModal) inferServiceCommand(servicePath string) string {
+	if f.project.Path == "" {
+		return ""
+	}
+
+	serviceDir := servicePath
+	if !filepath.IsAbs(serviceDir) {
+		switch serviceDir {
+		case "", ".":
+			serviceDir = f.project.Path
+		default:
+			serviceDir = filepath.Join(f.project.Path, servicePath)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(serviceDir, "build.gradle")); err == nil {
+		return f.gradleExecutable(serviceDir) + " run"
+	}
+	if _, err := os.Stat(filepath.Join(serviceDir, "build.gradle.kts")); err == nil {
+		return f.gradleExecutable(serviceDir) + " run"
+	}
+
+	manifestPath := filepath.Join(serviceDir, "package.json")
+	if data, err := os.ReadFile(manifestPath); err == nil {
+		var manifest packageManifest
+		if err := json.Unmarshal(data, &manifest); err == nil {
+			rt := detectRuntime(serviceDir, manifest)
+			if rt == "bun" {
+				return "bun run start"
+			}
+			return "npm run start"
+		}
+	}
+
+	if rt := detectRuntime(serviceDir, packageManifest{}); rt == "bun" {
+		return "bun run start"
+	}
+	return "npm run start"
+}
+
+func (f *formModal) gradleExecutable(serviceDir string) string {
+	execName := "gradlew"
+	if runtime.GOOS == "windows" {
+		execName = "gradlew.bat"
+	}
+	dir := serviceDir
+	for {
+		candidate := filepath.Join(dir, execName)
+		if _, err := os.Stat(candidate); err == nil {
+			rel, err := filepath.Rel(serviceDir, candidate)
+			if err == nil {
+				return filepath.ToSlash(rel)
+			}
+		}
+		if dir == f.project.Path {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "gradle"
+}
+
+func (f *formModal) wrapText(text string, width int) string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return text
+	}
+
+	var lines []string
+	var currentLine strings.Builder
+	currentLen := 0
+
+	for _, word := range words {
+		wordLen := utf8.RuneCountInString(word)
+		if currentLen == 0 {
+			currentLine.WriteString(word)
+			currentLen = wordLen
+		} else if currentLen+1+wordLen <= width {
+			currentLine.WriteString(" " + word)
+			currentLen += 1 + wordLen
+		} else {
+			lines = append(lines, currentLine.String())
+			currentLine.Reset()
+			currentLine.WriteString(word)
+			currentLen = wordLen
+		}
+	}
+
+	if currentLine.Len() > 0 {
+		lines = append(lines, currentLine.String())
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (f *formModal) wrapSuggestion(marker, option string, maxWidth int) []string {
+	iconWidth := utf8.RuneCountInString(marker)
+	contentWidth := maxWidth - iconWidth
+
+	if utf8.RuneCountInString(option) <= contentWidth {
+		return []string{marker + option}
+	}
+
+	firstLine := marker + option[:contentWidth-1]
+	remaining := option[contentWidth-1:]
+
+	var lines []string
+	lines = append(lines, firstLine)
+
+	indent := strings.Repeat(" ", iconWidth)
+	for utf8.RuneCountInString(remaining) > contentWidth {
+		lines = append(lines, indent+remaining[:contentWidth])
+		remaining = remaining[contentWidth:]
+	}
+	if len(remaining) > 0 {
+		lines = append(lines, indent+remaining)
+	}
+
+	return lines
+}
+
 // ---- rendering ----------------------------------------------------------------
 
 var (
@@ -489,17 +644,43 @@ func (m model) renderModal(screenW, screenH int) string {
 		lines = append(lines, label)
 
 		if fld.kind == fieldSelect {
-			for optionIndex, option := range fld.options {
+			isServiceSuggestions := f.isServiceMode() && i == 3
+			visibleCount := 4
+			startIndex := 0
+			if isServiceSuggestions && len(fld.options) > visibleCount {
+				selected := fld.optionIndex
+				if selected <= 1 {
+					startIndex = 0
+				} else if selected >= len(fld.options)-2 {
+					startIndex = len(fld.options) - visibleCount
+				} else {
+					startIndex = selected - 1
+				}
+			}
+
+			suggestionLineCount := 0
+			maxSuggestionLines := visibleCount
+			for optionIndex := startIndex; optionIndex < startIndex+visibleCount && optionIndex < len(fld.options); optionIndex++ {
+				option := fld.options[optionIndex]
 				marker := "○ "
 				if optionIndex == fld.optionIndex {
 					marker = "◉ "
 				}
-				display := ansi.Truncate(marker+option, 55, "…")
 				style := fieldInactiveStyle
-				if i == f.activeField && optionIndex == fld.optionIndex {
+				if isServiceSuggestions && i == f.activeField && optionIndex == fld.optionIndex {
 					style = fieldActiveStyle
 				}
-				lines = append(lines, style.Render(display))
+				suggestionLines := f.wrapSuggestion(marker, option, 55)
+				for _, line := range suggestionLines {
+					if suggestionLineCount >= maxSuggestionLines {
+						break
+					}
+					lines = append(lines, style.Render(line))
+					suggestionLineCount++
+				}
+				if suggestionLineCount >= maxSuggestionLines {
+					break
+				}
 			}
 			lines = append(lines, "")
 			continue
@@ -509,7 +690,7 @@ func (m model) renderModal(screenW, screenH int) string {
 		if i == f.activeField {
 			cursor = "▌"
 		}
-		display := ansi.Truncate(fld.value+cursor, 55, "…")
+		display := f.wrapText(fld.value+cursor, 55)
 
 		style := fieldInactiveStyle
 		if i == f.activeField {
